@@ -1,0 +1,41 @@
+[Unit]
+Description=IRC GitWatch GitHub-to-IRC monitor
+Documentation=https://github.com/teuk/irc-gitwatch
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=irc-gitwatch
+Group=irc-gitwatch
+EnvironmentFile=/etc/irc-gitwatch.env
+ExecStartPre=/usr/bin/perl /opt/irc-gitwatch/irc-gitwatch.pl --config-check
+ExecStart=/usr/bin/perl /opt/irc-gitwatch/irc-gitwatch.pl
+Restart=on-failure
+RestartSec=10s
+KillSignal=SIGTERM
+TimeoutStopSec=30s
+UMask=0077
+
+StateDirectory=irc-gitwatch
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/irc-gitwatch
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

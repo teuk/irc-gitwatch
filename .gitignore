@@ -1,0 +1,12 @@
+.env
+*.state.json
+*.state.json.bak
+*.log
+*.pid
+*.swp
+*~
+.DS_Store
+.idea/
+.vscode/
+coverage/
+dist/

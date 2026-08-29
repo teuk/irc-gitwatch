@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest a focused improvement
+title: "feature: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What operational problem should IRC GitWatch solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the smallest useful behavior and its compatibility impact.
+    validations:
+      required: true

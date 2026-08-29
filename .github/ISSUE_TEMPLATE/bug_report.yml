@@ -1,0 +1,45 @@
+name: Bug report
+description: Report a reproducible IRC GitWatch problem
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never include tokens, webhook secrets, SASL passwords, channel keys or private state data.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      placeholder: Output of ./irc-gitwatch.pl --version
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Webhook
+        - GitHub polling
+        - GitHub Actions
+        - GitHub Traffic
+        - Public account portfolio
+        - IRC delivery
+        - Dashboard or HTTP API
+        - State or migration
+        - RSS
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include minimal reproduction steps and redacted diagnostics.
+    validations:
+      required: true
+  - type: textarea
+    id: checks
+    attributes:
+      label: Check output
+      description: Redacted output from --config-check, --selftest or --doctor.
+      render: text
