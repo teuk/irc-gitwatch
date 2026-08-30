@@ -6,20 +6,21 @@
 
 IRC GitWatch is a single-process Perl daemon that turns GitHub activity into reliable IRC notifications and a live operational dashboard. It combines signed webhooks with polling reconciliation, watches GitHub Actions, preserves a per-target delivery queue, and exposes traffic and public-account analytics without pretending GitHub's aggregate “unique” figures are raw IP counts.
 
-The project began as the production bot behind `teuk/mediabot_v3`. Release 0.29 keeps that battle-tested core while making the repository, public account and IRC targets configurable for everyone.
+The project began as the production bot behind `teuk/mediabot_v3`. Release 0.30 keeps that battle-tested core, adds CI reliability intelligence, and remains configurable for any public repository, owner account and IRC target set.
 
 ## Why it is different
 
 - Signed `X-Hub-Signature-256` webhook verification with repository scope checks and replay suppression.
 - Polling reconciliation for events a webhook may miss, with ETags, pagination and rate-limit backoff.
 - GitHub Actions failure, recovery, slow-run, missing-run and flaky-run detection.
+- Bounded 30-day CI reliability analytics: pass rate, active/resolved incidents, MTTR, p50/p95 runtime and current green streak, derived from the existing Actions feed without extra API calls.
 - Persistent fan-out delivery: each IRC network/channel is audited independently.
 - GitHub Traffic dashboard with clones, views, unique cloners, unique visitors, trends and retained daily history.
 - Public owner portfolio: activity, stars, forks, hygiene, stale projects and change history for one configurable GitHub account.
 - Read-only JSON, health and Prometheus endpoints.
 - Optional RSS/Atom announcements.
 - Defensive UTF-8 and legacy mojibake repair across IRC, state, JSON and HTML.
-- One executable, one state file, built-in diagnostics and 143 deterministic self-tests. No framework required — a pleasantly small bit of machinery with rather a lot under the cloak.
+- One executable, one state file, built-in diagnostics and 154 deterministic self-tests. No framework required — a pleasantly small bit of machinery with rather a lot under the cloak.
 
 ## Requirements
 
@@ -93,6 +94,7 @@ The default local URL is `http://127.0.0.1:9510/`. Useful endpoints:
 | `/` | Live dashboard |
 | `/status.json` | Compact runtime state |
 | `/?api=dashboard` | Full dashboard payload |
+| `/ci.json` | Retained CI reliability and incident analysis |
 | `/traffic.json` | Traffic aggregates and daily history |
 | `/account.json` | Public owner portfolio |
 | `/broadcast.json` | Per-target fan-out audit |
@@ -111,6 +113,8 @@ Messages are read-only and begin with `!github`. Start with:
 ```text
 !github help
 !github status
+!github reliability
+!github incidents
 !github failures
 !github traffic
 !github portfolio
@@ -139,7 +143,7 @@ State writes are atomic, mode `0600`, and can keep a `.bak` recovery copy. SIGTE
 
 ## Compatibility contract
 
-The initial public release deliberately retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and IRC command vocabulary. Existing v0.29 state can therefore be reused after setting an explicit `GITHUB_STATE_FILE` and matching repository/account configuration.
+Release 0.30 retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and every existing IRC command. Its new CI history is an optional additive state field, so an existing v0.29 state can be reused directly; reliability coverage fills from the first successful Actions scan.
 
 Run `make check` before every upgrade. The test suite runs once with the project defaults and once with an unrelated GitHub owner to guard against accidental `teuk` coupling.
 

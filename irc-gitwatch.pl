@@ -20,7 +20,7 @@ binmode STDOUT, ':encoding(UTF-8)' or die "STDOUT UTF-8: $!";
 binmode STDERR, ':encoding(UTF-8)' or die "STDERR UTF-8: $!";
 $SIG{PIPE}='IGNORE'; # A proxy/client disconnect must never kill the daemon.
 
-use constant VERSION          => '0.29';
+use constant VERSION          => '0.30';
 use constant APP_NAME         => 'IRC GitWatch';
 use constant API_VERSION      => '2026-03-10';
 use constant MAX_IRC_BYTES    => 370;
@@ -31,6 +31,8 @@ use constant MAX_FINGERPRINTS => 1500;
 use constant MAX_RSS_IDS      => 1000;
 use constant MAX_TRAFFIC_DAYS => 400;
 use constant MAX_ACCOUNT_DAYS => 400;
+use constant MAX_CI_RUNS      => 500;
+use constant MAX_CI_DAYS      => 30;
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 sub env_text { my ($k,$d)=@_; my $v=exists $ENV{$k}?$ENV{$k}:$d; $v//=q{}; $v=~s/^\s+|\s+$//g; $v }
@@ -181,7 +183,7 @@ sub config_check { my @e=config_errors(); logmsg('ERROR',$_) for @e; logmsg('INF
 
 # ── Process state ─────────────────────────────────────────────────────────────
 my %STATS=map {($_=>0)} qw(hook_received hook_valid hook_sent hook_dupe hook_invalid hook_suppressed hook_bad_signature hook_missing_headers hook_bad_json hook_wrong_repo hook_read_rejected hook_disabled_requests http_requests http_bad_requests http_chunked_requests http_expect_continue hook_root_alias_hits dashboard_api_requests dashboard_api_errors poll_runs poll_pages poll_gap poll_new poll_sent poll_not_modified poll_errors actions_polls actions_pages actions_gap actions_new actions_sent actions_not_modified actions_errors actions_failures actions_success actions_recoveries actions_enriched actions_enrich_skipped actions_slow_alerts actions_missing_alerts actions_expect_cleared actions_flaky_alerts traffic_cycles traffic_requests traffic_errors traffic_forbidden account_polls account_pages account_not_modified account_errors account_repos_seen account_changes_detected broadcast_enqueued broadcast_completed broadcast_delivery_attempts broadcast_delivery_failures queue_dropped queue_partial_dropped rate_limit_hits irc_epiknet_sent irc_libera_sent irc_undernet_sent irc_undernet_teuk_sent irc_undernet_miaw_sent irc_epiknet_reconnects irc_libera_reconnects irc_undernet_reconnects irc_heartbeat_pings irc_heartbeat_timeouts irc_join_retries irc_join_rejects http_listener_starts command_throttled state_backups state_recoveries state_save_errors ops_degraded_alerts ops_recovery_alerts rss_polls rss_new rss_sent rss_not_modified rss_unchanged rss_errors);
-my %STATE=(etag=>'',event_seen=>{},deliveries=>{},fingerprints=>{},pending=>[],history=>[],broadcast_seq=>0,broadcast_history=>[],delivery_stats=>{},last_hook_ok=>0,last_hook_event=>'',last_hook_reject_reason=>'',last_hook_reject_at=>0,last_event_text=>'',last_event_source=>'',last_event_at=>0,actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0,account_etag=>'',account_repos=>[],account_history=>{},account_changes=>[],last_account_ok=>0,rss_seen=>{},rss_etag=>'',rss_modified=>'',last_rss_ok=>0,last_rss_title=>'',last_rss_link=>'',rss_id_version=>0,rss_text_version=>0,rss_digest=>'',stats_version=>0,ops_health_key=>'',ops_health_since=>0,ops_health_alerted=>0,ops_degraded_announced=>0);
+my %STATE=(etag=>'',event_seen=>{},deliveries=>{},fingerprints=>{},pending=>[],history=>[],broadcast_seq=>0,broadcast_history=>[],delivery_stats=>{},last_hook_ok=>0,last_hook_event=>'',last_hook_reject_reason=>'',last_hook_reject_at=>0,last_event_text=>'',last_event_source=>'',last_event_at=>0,actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],ci_run_history=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0,account_etag=>'',account_repos=>[],account_history=>{},account_changes=>[],last_account_ok=>0,rss_seen=>{},rss_etag=>'',rss_modified=>'',last_rss_ok=>0,last_rss_title=>'',last_rss_link=>'',rss_id_version=>0,rss_text_version=>0,rss_digest=>'',stats_version=>0,ops_health_key=>'',ops_health_since=>0,ops_health_alerted=>0,ops_degraded_announced=>0);
 my %RUN=(
  started=>time, stopping=>0,
  listener=>undef,http_listener_error=>'',http_listener_started=>0,next_http_retry=>0,http_last_at=>0,http_last_method=>'',http_last_path=>'',http_last_status=>0,
@@ -517,6 +519,16 @@ sub cap_hash {
  my($h,$max)=@_; return if keys(%$h)<=$max;
  my@k=sort{($h->{$b}||0)<=>($h->{$a}||0)}keys%$h; my%keep=map{($_=>1)}@k[0..$max-1]; delete$h->{$_} for grep{!$keep{$_}}keys%$h;
 }
+sub normalize_ci_history_entry {
+ my($x)=@_;return unless ref($x)eq'HASH';
+ my$id=int($x->{id}||0);my$attempt=int($x->{attempt}||1);$attempt=1 if$attempt<1;my$at=int($x->{at}||$x->{completed_at}||0);
+ my$conclusion=lc(clean($x->{conclusion}||''));return unless$id>0&&$at>0&&$conclusion ne'';
+ my$workflow_id=int($x->{workflow_id}||0);my$name=short($x->{name}||'GitHub Actions',120);my$branch=short($x->{branch}||'repository',120);
+ my$scope=($workflow_id>0?'id:'.$workflow_id:'name:'.lc($name))."\x1f".lc($branch);my$duration=int($x->{duration}||0);$duration=0 if$duration<0;
+ +{key=>join(':',$id,$attempt,$conclusion),id=>$id,attempt=>$attempt,workflow_id=>$workflow_id,scope=>$scope,
+   name=>$name,branch=>$branch,conclusion=>$conclusion,at=>$at,started_at=>int($x->{started_at}||0),
+   duration=>$duration,sha=>short($x->{sha}||'',64),url=>clean($x->{url}||'')};
+}
 sub prune_state {
  my$n=time;
  delete$STATE{event_seen}{$_} for grep{!$STATE{event_seen}{$_}||$STATE{event_seen}{$_}<$n-30*86400}keys%{$STATE{event_seen}};
@@ -538,6 +550,10 @@ sub prune_state {
  for my$k(keys%{$STATE{ci_flap_state}}){
   my$v=$STATE{ci_flap_state}{$k};delete$STATE{ci_flap_state}{$k} if ref($v)ne'HASH'||!$v->{last_at}||$v->{last_at}<$n-7*86400;
  }
+ my%ci_seen;my@ci=sort{($a->{at}||0)<=>($b->{at}||0)}grep{defined&&!$ci_seen{$_->{key}}++}
+  map{normalize_ci_history_entry($_)}@{$STATE{ci_run_history}};
+ @ci=grep{$_->{at}>=$n-MAX_CI_DAYS*86400}@ci;
+ splice@ci,0,@ci-MAX_CI_RUNS if@ci>MAX_CI_RUNS;$STATE{ci_run_history}=\@ci;
  for my$d(keys%{$STATE{traffic_history}}){
   my$v=$STATE{traffic_history}{$d};delete$STATE{traffic_history}{$d} unless$d=~/^\d{4}-\d\d-\d\d$/&&ref($v)eq'HASH';
  }
@@ -642,6 +658,11 @@ sub load_state {
  $STATE{ci_expected}={%{$d->{ci_expected}}} if ref($d->{ci_expected})eq'HASH';
  $STATE{ci_sha_seen}={%{$d->{ci_sha_seen}}} if ref($d->{ci_sha_seen})eq'HASH';
  $STATE{ci_flap_state}={%{$d->{ci_flap_state}}} if ref($d->{ci_flap_state})eq'HASH';
+ if(ref($d->{ci_run_history})eq'ARRAY'){
+  my%seen;my@runs=sort{($a->{at}||0)<=>($b->{at}||0)}grep{defined&&!$seen{$_->{key}}++}
+   map{normalize_ci_history_entry($_)}@{$d->{ci_run_history}};
+  splice@runs,0,@runs-MAX_CI_RUNS if@runs>MAX_CI_RUNS;$STATE{ci_run_history}=\@runs;
+ }
  $STATE{traffic_clones}={%{$d->{traffic_clones}}} if ref($d->{traffic_clones})eq'HASH';
  $STATE{traffic_views}={%{$d->{traffic_views}}} if ref($d->{traffic_views})eq'HASH';
  $STATE{traffic_referrers}=[map{{%$_}}@{$d->{traffic_referrers}}] if ref($d->{traffic_referrers})eq'ARRAY';
@@ -1116,6 +1137,43 @@ sub normalize_action_run {
   url=>$r->{html_url}||"https://github.com/$CFG{repo}/actions",
  };
 }
+sub record_ci_run_history {
+ my($runs)=@_;return 0 unless ref($runs)eq'ARRAY';my%seen=map{($_->{key}=>1)}grep{ref($_)eq'HASH'}@{$STATE{ci_run_history}};my$added=0;
+ for my$r(@$runs){next unless ref($r)eq'HASH'&&clean($r->{status}||'')eq'completed';my$e=normalize_action_run($r);next unless int($e->{id}||0)>0&&clean($e->{conclusion}||'')ne'';
+  my$at=int($e->{completed_at}||time);my$duration=$e->{started_at}&&$at>=$e->{started_at}?int($at-$e->{started_at}):0;
+  my$x=normalize_ci_history_entry({id=>$e->{id},attempt=>$e->{attempt},workflow_id=>$e->{workflow_id},scope=>ci_scope_key($e),name=>$e->{title},branch=>$e->{ref},conclusion=>$e->{conclusion},at=>$at,started_at=>$e->{started_at},duration=>$duration,sha=>$e->{sha},url=>$e->{url}});
+  next unless$x&&!$seen{$x->{key}}++;push@{$STATE{ci_run_history}},$x;$added++;
+ }
+ if($added){my$now=time;@{$STATE{ci_run_history}}=sort{($a->{at}||0)<=>($b->{at}||0)}grep{($_->{at}||0)>=$now-MAX_CI_DAYS*86400}@{$STATE{ci_run_history}};splice@{$STATE{ci_run_history}},0,@{$STATE{ci_run_history}}-MAX_CI_RUNS if@{$STATE{ci_run_history}}>MAX_CI_RUNS}
+ $added;
+}
+sub ci_percentile {
+ my($values,$percent)=@_;my@v=sort{$a<=>$b}grep{defined&&$_>=0}@{$values||[]};return 0 unless@v;
+ my$i=int($percent*@v+.999999)-1;$i=0 if$i<0;$i=$#v if$i>$#v;int($v[$i]);
+}
+sub ci_reliability_summary {
+ my($now)=@_;$now=int($now||time);my$cut=$now-MAX_CI_DAYS*86400;
+ my@runs=sort{($a->{at}||0)<=>($b->{at}||0)}grep{ref($_)eq'HASH'&&($_->{at}||0)>=$cut}@{$STATE{ci_run_history}};
+ my($success,$failed,$neutral)=(0,0,0);my(@durations,@resolved);my%open;
+ for my$r(@runs){my$c=lc(clean($r->{conclusion}||''));if($c eq'success'){$success++}elsif(ci_bad($c)){$failed++}else{$neutral++}
+  push@durations,int($r->{duration})if int($r->{duration}||0)>0;
+  my$scope=$r->{scope}||'unknown';
+  if(ci_bad($c)){
+   $open{$scope}||={scope=>$scope,name=>$r->{name},branch=>$r->{branch},opened_at=>int($r->{at}),failures=>0,first_url=>$r->{url}};
+   $open{$scope}{failures}++;$open{$scope}{last_failure_at}=int($r->{at});$open{$scope}{last_url}=$r->{url};next;
+  }
+  if($c eq'success'&&$open{$scope}){my$x=delete$open{$scope};$x->{resolved_at}=int($r->{at});$x->{duration}=$x->{resolved_at}-$x->{opened_at};$x->{recovery_url}=$r->{url};push@resolved,$x if$x->{duration}>=0}
+ }
+ my$decisive=$success+$failed;my$rate=$decisive?int($success*1000/$decisive+.5)/10:0;
+ my@mttr=map{int($_->{duration}||0)}@resolved;my$mttr_total=0;$mttr_total+=$_ for@mttr;my$mttr=@mttr?int($mttr_total/@mttr+.5):0;my$longest=@mttr?(sort{$b<=>$a}@mttr)[0]:0;
+ my$green=0;for my$r(reverse@runs){my$c=lc(clean($r->{conclusion}||''));next unless$c eq'success'||ci_bad($c);last if ci_bad($c);$green++}
+ my@active=current_ci_failures();my$state=!$CFG{actions_enabled}?'off':!$decisive?'waiting':@active?'degraded':$rate>=95?'stable':'watch';
+ my$first=@runs?int($runs[0]{at}||0):0;my$last=@runs?$runs[-1]:{};my@recent=reverse@runs;splice@recent,10 if@recent>10;@resolved=reverse sort{($a->{resolved_at}||0)<=>($b->{resolved_at}||0)}@resolved;splice@resolved,10 if@resolved>10;
+ +{state=>$state,window_days=>MAX_CI_DAYS,coverage_days=>$first?int(($now-$first)/86400)+1:0,runs=>scalar@runs,decisive_runs=>$decisive,success=>$success,failed=>$failed,neutral=>$neutral,pass_rate=>$rate,
+   active_incidents=>scalar@active,resolved_incidents=>scalar@mttr,mttr_seconds=>$mttr,longest_recovery_seconds=>$longest,p50_duration_seconds=>ci_percentile(\@durations,.50),p95_duration_seconds=>ci_percentile(\@durations,.95),green_streak=>$green,
+   latest=>{%$last},active=>[map{{%$_}}@active],recent=>[map{{%$_}}@recent],resolved=>[map{{%$_}}@resolved]};
+}
+sub ci_reliability_payload { my$s=ci_reliability_summary();+{%$s,retained_runs=>scalar(@{$STATE{ci_run_history}}),retention=>{days=>MAX_CI_DAYS,max_runs=>MAX_CI_RUNS}} }
 sub update_running_ci_event {
  my($e,$allow_slow)=@_;return 0 unless$e&&($e->{kind}||'')eq'ci'&&int($e->{id}||0)>0;
  note_ci_sha_seen($e->{sha});my$cleared=clear_ci_expectation($e->{sha});
@@ -1259,6 +1317,7 @@ sub process_actions_batch {
  my@uniq=grep{my$k=action_key($_);!$once{$k}++}@$runs;$runs=\@uniq;
  my$running_changed=refresh_running_ci($runs,!$$fresh);
  my@completed=grep{clean($_->{status}//'')eq'completed'&&defined$_->{id}}@$runs;
+ my$history_added=record_ci_run_history(\@completed);
  if(@completed){
   my$r=$completed[0];$STATE{last_action_name}=clean($r->{name}||$r->{display_title}||'GitHub Actions');
   $STATE{last_action_conclusion}=clean($r->{conclusion}||'');
@@ -1284,7 +1343,7 @@ sub process_actions_batch {
   next unless ci_should_announce($e);
   queue_ci_announcement($e);
  }
- save_state() if@new||$running_changed;1;
+ save_state() if@new||$running_changed||$history_added;1;
 }
 sub reconcile_actions {
  my($fresh)=@_;return 0 unless$CFG{actions_enabled}&&time>=$RUN{actions_next}&&github_rest_allowed()&&!$RUN{actions_scan};
@@ -2128,6 +2187,26 @@ sub command {
    'failed-job detail '.($CFG{actions_enrich}?paint(3,'on'):paint(14,'off')));
   return
  }
+ if($cmd eq'reliability'||$cmd eq'slo'){
+  my$x=ci_reliability_summary();my$state=$x->{state};my$color=$state eq'stable'?3:$state eq'degraded'?4:$state eq'watch'?8:14;
+  if(!$x->{decisive_runs}){irc_msg($net,$r,icon('ci').' '.paint($color,bold('CI reliability '.uc($state))).$s.'waiting for completed decisive runs');return}
+  irc_msg($net,$r,icon('ci').' '.paint(11,bold('CI reliability · '.$x->{window_days}.'d')).$s.paint($color,uc($state)).$s.
+   'pass '.paint($x->{pass_rate}>=95?3:$x->{pass_rate}>=80?8:4,$x->{pass_rate}.'%').$s.
+   paint(10,$x->{success}.' success / '.$x->{failed}.' failed').$s.'coverage '.paint(14,$x->{coverage_days}.'d · '.$x->{runs}.' runs retained'));
+  irc_msg($net,$r,icon('time').' '.paint(11,bold('CI recovery')).$s.
+   'active '.paint($x->{active_incidents}?4:3,$x->{active_incidents}).$s.'resolved '.paint(10,$x->{resolved_incidents}).$s.
+   'MTTR '.paint(10,$x->{resolved_incidents}?duration_text($x->{mttr_seconds}):'n/a').$s.
+   'p95 runtime '.paint(10,$x->{p95_duration_seconds}?duration_text($x->{p95_duration_seconds}):'n/a').$s.
+   'green streak '.paint($x->{green_streak}?3:14,$x->{green_streak}));
+  return
+ }
+ if($cmd eq'incident'||$cmd eq'incidents'){
+  my$x=ci_reliability_summary();my@active=@{$x->{active}};my@resolved=@{$x->{resolved}};
+  if(!@active&&!@resolved){irc_msg($net,$r,icon('ci').' '.paint(3,bold('CI incidents')).$s.'none in retained history');return}
+  if(@active){irc_msg($net,$r,icon('ci').' '.paint(4,bold('Active CI incidents')).$s.scalar(@active));my$limit=@active>3?3:scalar@active;for my$i(0..$limit-1){my$f=$active[$i];my$line=paint(10,irc_short($f->{name},65)).' on '.paint(10,irc_short($f->{branch},35)).' · '.paint(4,uc($f->{conclusion}||'failure')).' · open '.paint(14,$f->{at}?age($f->{at}):'time unknown');$line.=' — '.$f->{url}if$f->{url};irc_msg($net,$r,$line)}}
+  if(@resolved){my$z=$resolved[0];irc_msg($net,$r,icon('health').' '.paint(11,bold('Latest recovery')).$s.paint(10,irc_short($z->{name},65)).' on '.paint(10,irc_short($z->{branch},35)).$s.'after '.paint(3,duration_text($z->{duration})).$s.'failed runs '.paint(14,$z->{failures}).($z->{recovery_url}?' — '.$z->{recovery_url}:''))}
+  return
+ }
  if($cmd eq'failures'){
   my@f=current_ci_failures();
   if(!@f){irc_msg($net,$r,icon('ci').' '.paint(3,bold('CI failures')).$s.'none currently tracked');return}
@@ -2434,7 +2513,7 @@ sub command {
   irc_msg($net,$r,paint(11,bold('IRC networks')).$s.join($s,@parts).$s.'heartbeat '.($CFG{irc_idle_ping}?paint(10,$CFG{irc_idle_ping}.'s').' timeout '.paint(10,$CFG{irc_pong_timeout}.'s'):paint(14,'off')).$s.'join retry/reject '.paint(14,$STATS{irc_join_retries}.'/'.$STATS{irc_join_rejects}));
   return
  }
- if($cmd eq'endpoints'){irc_msg($net,$r,icon('api').' '.paint(11,bold('Local HTTP')).$s.'dashboard /'.$s.'live-data ?api=dashboard'.$s.'status /status.json'.$s.'health /healthz'.$s.'live /livez'.$s.'ready /readyz'.$s.'broadcast /broadcast.json'.$s.'traffic /traffic.json'.$s.'account /account.json'.$s.'metrics '.($CFG{metrics_enabled}?'/metrics':'off').$s.'webhook '.$CFG{hook_path});return}
+ if($cmd eq'endpoints'){irc_msg($net,$r,icon('api').' '.paint(11,bold('Local HTTP')).$s.'dashboard /'.$s.'live-data ?api=dashboard'.$s.'status /status.json'.$s.'health /healthz'.$s.'live /livez'.$s.'ready /readyz'.$s.'CI reliability /ci.json'.$s.'broadcast /broadcast.json'.$s.'traffic /traffic.json'.$s.'account /account.json'.$s.'metrics '.($CFG{metrics_enabled}?'/metrics':'off').$s.'webhook '.$CFG{hook_path});return}
  if($cmd eq'icons'){irc_msg($net,$r,paint(11,bold('Icons')).$s.'mode '.paint(10,$CFG{icon_mode}).$s.icon('github').' GitHub '.$s.icon('forum').' Forum '.$s.icon('ci').' CI '.$s.icon('health').' OK '.$s.icon('webhook').' hook '.$s.icon('refresh').' poll');return}
  if($cmd eq'events'){irc_msg($net,$r,icon('events').' '.paint(11,bold('Public feed')).$s.'push issues comments PR reviews releases refs stars forks discussions CI failures/recovery optional slow/missing/flaky CI checks deploys pages repo changes'.$s.paint(14,'security alerts intentionally hidden'));return}
  if($cmd eq'portfolio'||$cmd eq'projects'){
@@ -2475,7 +2554,7 @@ sub command {
  if($cmd eq'repo'){irc_msg($net,$r,icon('repo').' '.paint(11,bold('Repository')).$s.paint(10,$CFG{repo}).$s."https://github.com/$CFG{repo}");return}
  if($cmd eq'help'){
   irc_msg($net,$r,icon('github').' '.paint(11,bold(APP_NAME.' · overview')).$s.join(' ',map{paint(10,$_)}qw(pulse now today summary status health problems dashboard recent last)));
-  irc_msg($net,$r,icon('ci').' '.paint(11,bold('CI / delivery')).$s.join(' ',map{paint(10,$_)}qw(ci failures flaky running expected broadcast queue networks schedule)));
+  irc_msg($net,$r,icon('ci').' '.paint(11,bold('CI / delivery')).$s.join(' ',map{paint(10,$_)}qw(ci reliability slo incidents failures flaky running expected broadcast queue networks schedule)));
   irc_msg($net,$r,icon('stats').' '.paint(11,bold('Traffic')).$s.join(' ',map{paint(10,$_)}qw(snapshot lateststats clones traffic audience uniques trend week compare peaks history top referrers paths)));
   irc_msg($net,$r,icon('repo').' '.paint(11,bold($CFG{account}.' portfolio')).$s.join(' ',map{paint(10,$_)}qw(portfolio repos stars stale changes)).' '.paint(10,'project <name>'));
   irc_msg($net,$r,icon('shield').' '.paint(11,bold('Diagnostics')).$s.join(' ',map{paint(10,$_)}qw(freshness stats webhook auth rate state alerts endpoints icons events repo)));
@@ -2588,7 +2667,7 @@ const num=value=>Number.isFinite(Number(value))?Number(value):0;
 const upper=value=>String(value??'').toUpperCase();
 const stateClass=value=>{
   const s=String(value??'').toLowerCase();
-  if(['online','live','ok','ready','token ok'].includes(s))return'ok';
+  if(['online','live','ok','ready','stable','token ok'].includes(s))return'ok';
   if(['error','offline','bad','token bad','auth error','degraded'].includes(s))return'bad';
   if(['off','disabled'].includes(s))return'off';
   return'warn';
@@ -2600,6 +2679,13 @@ const rel=ts=>{
   if(s<3600)return`${Math.floor(s/60)}m ago`;
   if(s<86400)return`${Math.floor(s/3600)}h ago`;
   return`${Math.floor(s/86400)}d ago`;
+};
+const duration=seconds=>{
+  let s=Math.max(0,Math.floor(num(seconds)));if(!s)return'n/a';
+  if(s<60)return`${s}s`;
+  if(s<3600)return`${Math.floor(s/60)}m ${s%60}s`;
+  if(s<86400)return`${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+  return`${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
 };
 const linkify=text=>{
   text=String(text??'');let out='',last=0;
@@ -2744,11 +2830,26 @@ function renderIRC(d){
   txt('irc-detail',`${targets.length} delivery targets · persistent fan-out queue · heartbeat ${d.irc?.heartbeat?.idle_ping_seconds||0}s`);
 }
 
+function renderReliability(d){
+  const r=d.ci_reliability||{},state=String(r.state||'waiting').toLowerCase();
+  const decisive=num(r.decisive_runs),resolved=num(r.resolved_incidents),active=num(r.active_incidents);
+  txt('ci-rel-window',`${num(r.window_days)||30}d window · ${num(r.runs)} runs retained · ${num(r.coverage_days)}d coverage`);
+  txt('ci-rel-state',upper(state));const st=$('ci-rel-state');if(st)st.className=stateClass(state);
+  txt('ci-rel-state-note',active?`${active} active incident${active===1?'':'s'}`:decisive?'no active incident':'collecting baseline');
+  txt('ci-rel-pass',decisive?`${num(r.pass_rate).toFixed(1)}%`:'n/a');const pass=$('ci-rel-pass');if(pass)pass.className=!decisive?'off':num(r.pass_rate)>=95?'ok':num(r.pass_rate)>=80?'warn':'bad';
+  txt('ci-rel-outcomes',`${num(r.success)} success · ${num(r.failed)} failed`);
+  txt('ci-rel-incidents',`${active} / ${resolved}`);const inc=$('ci-rel-incidents');if(inc)inc.className=active?'bad':resolved?'ok':'off';
+  txt('ci-rel-mttr',resolved?duration(r.mttr_seconds):'n/a');
+  txt('ci-rel-p95',num(r.p95_duration_seconds)?duration(r.p95_duration_seconds):'n/a');
+  txt('ci-rel-streak',num(r.green_streak));const streak=$('ci-rel-streak');if(streak)streak.className=num(r.green_streak)?'ok':'off';
+}
+
 function renderGitHub(d){
   const traffic=d.github_traffic||{},account=d.github_account||{};
   html('github-pills',
     statusPill('API',d.github_api)+
     statusPill('CI',d.github_actions)+
+    statusPill('Reliability',d.ci_reliability?.state||'waiting')+
     statusPill('Traffic',traffic.state||'waiting')+
     statusPill(account.account||'account',account.state||'waiting')+
     pill('Auth',d.auth||'?')
@@ -2831,6 +2932,7 @@ function render(d){
   renderHero(d);
   renderAccount(d);
   renderIRC(d);
+  renderReliability(d);
   renderGitHub(d);
   renderSources(d);
   renderRuntime(d);
@@ -2913,6 +3015,12 @@ sub dashboard_html {
  my$api_detail=html_escape(!github_rest_allowed()?'rate limited · resume '.rate_resume_text():$RUN{last_api_error}ne''?$RUN{last_api_error}:$RUN{last_api_ok}?'last OK '.age($RUN{last_api_ok}).' · events '.maxn($CFG{reconcile},$RUN{poll_min}).'s':'waiting for first successful poll');
  my$red=current_ci_failure_count();my$running=current_ci_running_count();my$expected=current_ci_expected_count();
  my$ci_detail=html_escape((!github_rest_allowed()?'rate limited · resume '.rate_resume_text():$RUN{actions_error}ne''?$RUN{actions_error}:$STATE{last_actions_ok}?'last API '.age($STATE{last_actions_ok}).' · '.($STATE{last_action_name}||'workflow').' '.($STATE{last_action_conclusion}||''):'waiting for first Actions poll').' · red '.$red.' · running '.$running.($CFG{actions_expect}?' · expected '.$expected:'').($CFG{actions_flaky_window}?' · flaky '.current_ci_flaky_count():'').($CFG{actions_slow}?' · slow alert '.duration_text($CFG{actions_slow}):''));
+ my$ci_rel=ci_reliability_summary();my$ci_rel_state=uc($ci_rel->{state}||'waiting');
+ my$ci_rel_class=$ci_rel->{state}eq'stable'?'ok':$ci_rel->{state}eq'degraded'?'bad':$ci_rel->{state}eq'off'?'off':'warn';
+ my$ci_rel_pass=$ci_rel->{decisive_runs}?traffic_num($ci_rel->{pass_rate},1).'%':'n/a';
+ my$ci_rel_pass_class=!$ci_rel->{decisive_runs}?'off':$ci_rel->{pass_rate}>=95?'ok':$ci_rel->{pass_rate}>=80?'warn':'bad';
+ my$ci_rel_state_note=$ci_rel->{active_incidents}?$ci_rel->{active_incidents}.' active incident'.($ci_rel->{active_incidents}==1?'':'s'):$ci_rel->{decisive_runs}?'no active incident':'collecting baseline';
+ my$ci_rel_incident_class=$ci_rel->{active_incidents}?'bad':$ci_rel->{resolved_incidents}?'ok':'off';
  my$rss_detail_txt=html_escape($RUN{rss_error}ne''?$RUN{rss_error}:$STATE{last_rss_ok}?age($STATE{last_rss_ok}).' · '.($STATE{last_rss_title}||'feed OK'):'waiting for first successful poll');
  my$rss_detail_html=$STATE{last_rss_link}ne''&&$STATE{last_rss_title}ne''
   ? age($STATE{last_rss_ok}).' · <a href="'.html_escape($STATE{last_rss_link}).'" rel="noopener noreferrer">'.html_escape($STATE{last_rss_title}).'</a>'
@@ -3023,6 +3131,7 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}foo
 .chart-line-cloner-uniques{fill:none;stroke:#b877d9;stroke-width:2}.chart-line-visitor-uniques{fill:none;stroke:#73bf69;stroke-width:2}.chart-area-cloner-uniques{fill:url(#clonerUniqueArea);opacity:.14}.chart-area-visitor-uniques{fill:url(#visitorUniqueArea);opacity:.11}
 .audience-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;margin-bottom:8px}.audience-cell{display:flex;align-items:center;justify-content:space-between;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 10px}.audience-cell span{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.06em}.audience-cell strong{font-size:11px;text-align:right;color:#dce2e8}.audience-cell strong.up{color:var(--ok)}.audience-cell strong.down{color:var(--warn)}
 .pulse-strip{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin-bottom:8px}.pulse-cell{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:8px 10px}.pulse-cell .pulse-label{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.06em}.pulse-cell .pulse-value{font-size:11px;text-align:right}
+.ci-reliability-panel{margin-bottom:8px;border-color:#2b3442}.ci-reliability-grid{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}.ci-reliability-cell{min-width:0;border:1px solid var(--line);border-radius:4px;background:#0f1115;padding:9px 10px}.ci-reliability-cell span{display:block;color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.06em}.ci-reliability-cell strong{display:block;margin-top:3px;font-size:16px;line-height:1.2;color:#dce2e8;overflow-wrap:anywhere}.ci-reliability-cell small{display:block;margin-top:4px;color:var(--muted2);font-size:9px;overflow-wrap:anywhere}.ci-reliability-cell strong.ok{color:var(--ok)}.ci-reliability-cell strong.warn{color:var(--warn)}.ci-reliability-cell strong.bad{color:var(--bad)}.ci-reliability-cell strong.off{color:var(--muted)}
 .pulse-panel{display:flex;flex-direction:column;gap:8px}.pulse-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:7px;border-bottom:1px solid var(--line)}.pulse-row:last-child{border-bottom:0}.pulse-label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em}.pulse-value{font-size:12px;color:#dce2e8;text-align:right}.pulse-value.ok{color:var(--ok)}.pulse-value.warn{color:var(--warn)}.pulse-value.bad{color:var(--bad)}
 .lower-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px}.list-panel{min-height:182px}.list-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid var(--line);font-size:11px}.list-row:first-child{border-top:0}.list-row span{color:#c9d0d8;overflow-wrap:anywhere}.list-row b{color:var(--muted);white-space:nowrap;font-weight:550}.panel-toolbar{display:flex;gap:4px;align-items:center}.range-btn{appearance:none;border:1px solid var(--line);background:#0f1115;color:var(--muted);border-radius:3px;padding:3px 7px;font-size:10px;cursor:pointer}.range-btn.active{border-color:#3e6caa;background:#172033;color:#dce9fa}.range-btn:hover{border-color:var(--line2);color:var(--text)}
 .account-panel{margin-bottom:8px}.account-kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px;margin:8px 0}.account-kpi{display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid var(--line);border-radius:4px;background:#0f1115;padding:8px 10px}.account-kpi span{color:var(--muted);font-size:9px;text-transform:uppercase;letter-spacing:.06em}.account-kpi strong{font-size:15px}.account-meta{display:flex;justify-content:space-between;gap:12px;color:var(--muted);font-size:10px;margin-top:7px;flex-wrap:wrap}
@@ -3036,8 +3145,8 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}foo
 .card.traffic-panel{border-color:rgba(103,232,249,.20);box-shadow:0 18px 60px rgba(0,0,0,.22)}
 .hero-trends{display:flex;gap:8px;align-items:center;margin-top:9px}.trend-chip{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:10px;border-top:1px solid var(--line);padding-top:7px;min-width:0}.trend-chip b{color:#cbd5df;font-weight:700}.trend-up{color:var(--ok)!important}.trend-down{color:var(--warn)!important}.hero-spark{height:28px;display:flex;align-items:flex-end;gap:2px;margin-left:auto;min-width:160px;max-width:260px;flex:1}.hero-spark i{display:block;flex:1;min-width:2px;background:#3c5367;border-radius:2px 2px 0 0;opacity:.82}
 details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#a8b3c0;font-size:11px;text-transform:uppercase;letter-spacing:.09em;font-weight:800}details.card>summary::-webkit-details-marker{display:none}details.card>summary:after{content:"＋";font-size:14px;color:var(--muted)}details.card[open]>summary:after{content:"−"}details.card[open]>summary{margin-bottom:12px}.details-note{color:var(--muted);font-size:10px;text-transform:none;letter-spacing:0;font-weight:500}
-\@media(max-width:900px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-row,.lower-grid{grid-template-columns:1fr}.chart-panel,.unique-chart-panel{min-height:275px}.pulse-strip{grid-template-columns:repeat(3,minmax(0,1fr))}.audience-strip,.account-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.pulse-panel{min-height:auto}}
-\@media(max-width:560px){.stat-row{grid-template-columns:1fr 1fr}.stat-panel .stat-value{font-size:24px}.top{align-items:flex-start}.toolbar-right{justify-content:flex-start}.chart-wrap,.unique-chart-panel .chart-wrap{height:205px}.pulse-strip,.audience-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.audit-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+\@media(max-width:900px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-row,.lower-grid{grid-template-columns:1fr}.chart-panel,.unique-chart-panel{min-height:275px}.pulse-strip,.ci-reliability-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.audience-strip,.account-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.pulse-panel{min-height:auto}}
+\@media(max-width:560px){.stat-row{grid-template-columns:1fr 1fr}.stat-panel .stat-value{font-size:24px}.top{align-items:flex-start}.toolbar-right{justify-content:flex-start}.chart-wrap,.unique-chart-panel .chart-wrap{height:205px}.pulse-strip,.ci-reliability-grid,.audience-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.audit-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
 \@media(max-width:900px){.hero-metrics,.ops-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.essential-strip{align-items:flex-start;flex-direction:column}.essential-note{white-space:normal}}
 \@media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats,.traffic-kpis,.broadcast-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 \@media(max-width:520px){.grid,.stats,.traffic-kpis,.traffic-columns,.broadcast-grid,.hero-metrics,.ops-grid,.account-kpis{grid-template-columns:1fr}.full{grid-column:1}.hero{padding:15px}.top{align-items:flex-start}.hero-head{flex-direction:column}.essential-strip{padding:9px}}
@@ -3077,6 +3186,18 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
  <div class="pulse-cell"><span class="pulse-label">Latest</span><span class="pulse-value" id="pulse-latest">$last_age</span></div>
 </div>
 
+<section class="card ci-reliability-panel">
+ <div class="panel-title"><span>CI reliability</span><small id="ci-rel-window">$ci_rel->{window_days}d window · $ci_rel->{runs} runs retained · $ci_rel->{coverage_days}d coverage</small></div>
+ <div class="ci-reliability-grid">
+  <div class="ci-reliability-cell"><span>Signal</span><strong id="ci-rel-state" class="$ci_rel_class">$ci_rel_state</strong><small id="ci-rel-state-note">$ci_rel_state_note</small></div>
+  <div class="ci-reliability-cell"><span>Pass rate</span><strong id="ci-rel-pass" class="$ci_rel_pass_class">$ci_rel_pass</strong><small id="ci-rel-outcomes">$ci_rel->{success} success · $ci_rel->{failed} failed</small></div>
+  <div class="ci-reliability-cell"><span>Incidents</span><strong id="ci-rel-incidents" class="$ci_rel_incident_class">$ci_rel->{active_incidents} / $ci_rel->{resolved_incidents}</strong><small>active / resolved</small></div>
+  <div class="ci-reliability-cell"><span>Mean recovery</span><strong id="ci-rel-mttr">@{[$ci_rel->{resolved_incidents}?duration_text($ci_rel->{mttr_seconds}):'n/a']}</strong><small>failure to next green</small></div>
+  <div class="ci-reliability-cell"><span>Runtime p95</span><strong id="ci-rel-p95">@{[$ci_rel->{p95_duration_seconds}?duration_text($ci_rel->{p95_duration_seconds}):'n/a']}</strong><small>completed runs</small></div>
+  <div class="ci-reliability-cell"><span>Green streak</span><strong id="ci-rel-streak" class="@{[$ci_rel->{green_streak}?'ok':'off']}">$ci_rel->{green_streak}</strong><small>latest decisive runs</small></div>
+ </div>
+</section>
+
 <div class="lower-grid"><section class="card list-panel"><div class="panel-title"><span>Top referrers</span><small>GitHub Traffic</small></div><div id="top-referrers">$initial_refs_html</div></section><section class="card list-panel"><div class="panel-title"><span>Popular content</span><small>GitHub Traffic</small></div><div id="top-paths">$initial_paths_html</div></section></div>
 
 <section class="card full account-panel"><div class="panel-title"><span>$account_name · public project portfolio</span><small id="account-updated">$account_age</small></div>
@@ -3098,7 +3219,7 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
 
 <details class="card full" style="margin-bottom:8px"><summary>Runtime diagnostics <span class="details-note">IRC · GitHub APIs · sources · state</span></summary><div class="ops-grid"><div class="card compact-card"><div class="label">IRC fan-out</div><div class="compact-lines" id="irc-pills">$irc_pills</div><div class="small" id="irc-detail">@{[scalar(@bt)]} delivery targets · one persistent queue</div></div><div class="card compact-card"><div class="label">GitHub</div><div class="compact-lines" id="github-pills">$gh_pills</div><div class="small" id="github-detail">$api_detail · $ci_detail</div></div><div class="card compact-card"><div class="label">Sources</div><div class="compact-lines" id="source-pills">$source_pills</div><div class="small" id="source-detail">$lh · RSS $rss_detail_txt</div></div><div class="card compact-card"><div class="label">Runtime</div><div class="compact-lines" id="runtime-pills">$sys_pills</div><div class="small" id="runtime-detail">$qdetail · $state_txt</div></div></div></details>
 <details class="card full"><summary>Persistent counters <span class="details-note">technical diagnostics</span></summary><div class="stats"><div class="stat"><b>Webhook</b><span id="counter-webhook">$hook_stats</span></div><div class="stat"><b>GitHub events</b><span id="counter-events">$poll_stats</span></div><div class="stat"><b>GitHub Actions</b><span id="counter-actions">$actions_stats</span></div><div class="stat"><b>Broadcast</b><span id="counter-broadcast">enqueued $STATS{broadcast_enqueued} · complete $STATS{broadcast_completed} · attempts $STATS{broadcast_delivery_attempts} · failures $STATS{broadcast_delivery_failures}</span></div><div class="stat"><b>GitHub Traffic</b><span id="counter-traffic">cycles $STATS{traffic_cycles} · requests $STATS{traffic_requests} · 403 $STATS{traffic_forbidden} · errors $STATS{traffic_errors}</span></div><div class="stat"><b>$account_name portfolio</b><span id="counter-account">polls $STATS{account_polls} · pages $STATS{account_pages} · 304 $STATS{account_not_modified} · repositories observed $STATS{account_repos_seen} · changes $STATS{account_changes_detected} · errors $STATS{account_errors}</span></div><div class="stat"><b>Forum RSS</b><span id="counter-rss">$rss_stats</span></div></div></details>
-<footer>$app · live dashboard · Exact GitHub totals use a rolling 14-day UTC window; daily curves retain up to @{[MAX_TRAFFIC_DAYS]} days. “Unique” means GitHub unique cloners/visitors, not IP addresses. Portfolio data is restricted to public repositories owned by $account_name. · <a href="?api=dashboard">dashboard JSON</a> · <a href="?api=broadcast">broadcast JSON</a> · <a href="?api=traffic">traffic JSON</a> · <a href="?api=account">account JSON</a></footer>
+<footer>$app · live dashboard · Exact GitHub totals use a rolling 14-day UTC window; daily curves retain up to @{[MAX_TRAFFIC_DAYS]} days. “Unique” means GitHub unique cloners/visitors, not IP addresses. Portfolio data is restricted to public repositories owned by $account_name. · <a href="?api=dashboard">dashboard JSON</a> · <a href="?api=ci">CI reliability JSON</a> · <a href="?api=broadcast">broadcast JSON</a> · <a href="?api=traffic">traffic JSON</a> · <a href="?api=account">account JSON</a></footer>
 </main></body></html>
 HTML
 }
@@ -3114,7 +3235,7 @@ sub status_payload {
    heartbeat=>{idle_ping_seconds=>$CFG{irc_idle_ping},pong_timeout_seconds=>$CFG{irc_pong_timeout},timeouts=>$STATS{irc_heartbeat_timeouts}},
   },
   webhook=>webhook_state(),webhook_detail=>{last_reject_reason=>$STATE{last_hook_reject_reason}||'',last_reject_at=>$STATE{last_hook_reject_at}||0,bad_signature=>$STATS{hook_bad_signature},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected}},
-  github_api=>api_state(),github_actions=>actions_state(),github_traffic=>{%{traffic_payload()},render_error=>$RUN{traffic_render_error}||''},github_account=>account_status_payload(),broadcast=>broadcast_payload(),
+  github_api=>api_state(),github_actions=>actions_state(),ci_reliability=>ci_reliability_summary(),github_traffic=>{%{traffic_payload()},render_error=>$RUN{traffic_render_error}||''},github_account=>account_status_payload(),broadcast=>broadcast_payload(),
   current_ci_failures=>current_ci_failure_count(),current_ci_running=>current_ci_running_count(),current_ci_expected=>current_ci_expected_count(),current_ci_flaky=>current_ci_flaky_count(),auth=>auth_short(),rss=>rss_state(),
   health=>health_report(),http_listener=>{listening=>$RUN{listener}?1:0,started_at=>$RUN{http_listener_started}||0,error=>$RUN{http_listener_error}||'',bind=>$CFG{hook_bind},port=>$CFG{hook_port},last_at=>$RUN{http_last_at}||0,last_method=>$RUN{http_last_method}||'',last_path=>$RUN{http_last_path}||'',last_status=>$RUN{http_last_status}||0,root_post_alias=>$CFG{hook_root_alias}?1:0},state=>state_status(),ops_alerts=>{enabled=>$CFG{ops_alerts}?1:0,debounce_seconds=>$CFG{ops_debounce},degraded=>$STATS{ops_degraded_alerts},recovered=>$STATS{ops_recovery_alerts}},github_rate=>{remaining=>$RUN{rate_remaining},limit=>$RUN{rate_limit},reset=>$RUN{rate_reset},blocked_until=>$RUN{rate_block_until}||0,reason=>$RUN{rate_block_reason}||''},
   queue=>scalar(@{$STATE{pending}}),queue_detail=>queue_snapshot(),history_count=>scalar(@{$STATE{history}}),last_event_source=>$STATE{last_event_source}||'',last_event_at=>$STATE{last_event_at}||0,
@@ -3170,6 +3291,15 @@ sub prometheus_metrics {
  push@out,'# TYPE githubwatch_ci_running_current gauge';push@out,'githubwatch_ci_running_current '.current_ci_running_count();
  push@out,'# TYPE githubwatch_ci_expected_current gauge';push@out,'githubwatch_ci_expected_current '.current_ci_expected_count();
  push@out,'# TYPE githubwatch_ci_flaky_current gauge';push@out,'githubwatch_ci_flaky_current '.current_ci_flaky_count();
+ my$rel=ci_reliability_summary();
+ push@out,'# TYPE githubwatch_ci_runs_retained gauge';push@out,'githubwatch_ci_runs_retained '.scalar(@{$STATE{ci_run_history}});
+ push@out,'# TYPE githubwatch_ci_reliability_window_runs gauge';push@out,'githubwatch_ci_reliability_window_runs '.int($rel->{runs}||0);
+ push@out,'# TYPE githubwatch_ci_reliability_pass_ratio gauge';push@out,'githubwatch_ci_reliability_pass_ratio '.sprintf('%.6f',($rel->{pass_rate}||0)/100);
+ push@out,'# TYPE githubwatch_ci_incidents_active gauge';push@out,'githubwatch_ci_incidents_active '.int($rel->{active_incidents}||0);
+ push@out,'# TYPE githubwatch_ci_incidents_resolved gauge';push@out,'githubwatch_ci_incidents_resolved '.int($rel->{resolved_incidents}||0);
+ push@out,'# TYPE githubwatch_ci_mttr_seconds gauge';push@out,'githubwatch_ci_mttr_seconds '.int($rel->{mttr_seconds}||0);
+ push@out,'# TYPE githubwatch_ci_duration_p95_seconds gauge';push@out,'githubwatch_ci_duration_p95_seconds '.int($rel->{p95_duration_seconds}||0);
+ push@out,'# TYPE githubwatch_ci_green_streak gauge';push@out,'githubwatch_ci_green_streak '.int($rel->{green_streak}||0);
  push@out,'# TYPE githubwatch_github_traffic_clones gauge';push@out,'githubwatch_github_traffic_clones '.int($tr->{clones}||0);
  push@out,'# TYPE githubwatch_github_traffic_clone_uniques gauge';push@out,'githubwatch_github_traffic_clone_uniques '.int($tr->{clone_uniques}||0);
  push@out,'# TYPE githubwatch_github_traffic_views gauge';push@out,'githubwatch_github_traffic_views '.int($tr->{views}||0);
@@ -3396,6 +3526,7 @@ sub handle_hook {
   if($api eq'broadcast'){http_response($c,200,'application/json',encode_json(broadcast_payload()),$m eq'HEAD',1);return}
   if($api eq'traffic'){http_response($c,200,'application/json',encode_json(traffic_payload()),$m eq'HEAD',1);return}
   if($api eq'account'){http_response($c,200,'application/json',encode_json(account_payload()),$m eq'HEAD',1);return}
+  if($api eq'ci'){http_response($c,200,'application/json',encode_json(ci_reliability_payload()),$m eq'HEAD',1);return}
   http_reply($c,404,'unknown dashboard API');return;
  }
 
@@ -3437,6 +3568,9 @@ sub handle_hook {
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/account.json'){
   http_response($c,200,'application/json',encode_json(account_payload()),$m eq'HEAD',1);return;
+ }
+ if(($m eq'GET'||$m eq'HEAD')&&$got eq'/ci.json'){
+  http_response($c,200,'application/json',encode_json(ci_reliability_payload()),$m eq'HEAD',1);return;
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/metrics'){
   return http_reply($c,404,'not found') unless$CFG{metrics_enabled};
@@ -3820,6 +3954,37 @@ sub selftest {
  my$account_metrics=prometheus_metrics();push@t,$account_metrics=~/githubwatch_github_account_repositories 3/&&$account_metrics=~/githubwatch_github_account_repo_stars\{[^\n]*repo="alpha"[^\n]*\} 5/;
  my$account_wire='';open my$account_fh,'>',\$account_wire or die"account selftest: $!";binmode$account_fh,':raw';my$account_net={id=>'account-test',label=>'Account test',up=>1,socket=>$account_fh,nick=>'gitwatch'};my$account_cd=$CFG{cmd_cooldown};$CFG{cmd_cooldown}=0;command($account_net,'tester','#test','!github portfolio');command($account_net,'tester','#test','!github project alpha');command($account_net,'tester','#test','!github changes');$CFG{cmd_cooldown}=$account_cd;close$account_fh;my$account_text=decode('UTF-8',$account_wire);push@t,$account_text=~/public portfolio/&&index($account_text,$owner.'/alpha')>=0&&index($account_text,'https://github.com/'.$owner.'/alpha')>=0&&$account_text=~/portfolio changes/;
  ($STATE{account_repos},$STATE{account_history},$STATE{account_changes},$STATE{last_account_ok},$CFG{account_enabled},$RUN{account_error},$CFG{account_stale_days})=($old_ar,$old_ah,$old_ac,$old_aok,$old_ae,$old_aerr,$old_astale);
+
+ # v0.30 retains a bounded Actions history and derives deterministic SRE-style
+ # reliability, recovery and runtime signals without another GitHub API call.
+ my($old_ci_history,$old_ci_bad,$old_ci_actions_enabled)=($STATE{ci_run_history},$STATE{ci_bad_state},$CFG{actions_enabled});
+ my$ci_now=int(time);$CFG{actions_enabled}=1;$STATE{ci_bad_state}={};
+ my$build_scope="id:101\x1fmain";my$lint_scope="id:202\x1fmain";my$ci_url='https://github.com/'.$CFG{repo}.'/actions/runs/';
+ $STATE{ci_run_history}=[
+  normalize_ci_history_entry({id=>1,workflow_id=>101,scope=>$build_scope,name=>'Build',branch=>'main',conclusion=>'failure',at=>$ci_now-1000,duration=>100,url=>$ci_url.'1'}),
+  normalize_ci_history_entry({id=>2,workflow_id=>101,scope=>$build_scope,name=>'Build',branch=>'main',conclusion=>'failure',at=>$ci_now-800,duration=>120,url=>$ci_url.'2'}),
+  normalize_ci_history_entry({id=>3,workflow_id=>101,scope=>$build_scope,name=>'Build',branch=>'main',conclusion=>'success',at=>$ci_now-400,duration=>90,url=>$ci_url.'3'}),
+  normalize_ci_history_entry({id=>4,workflow_id=>202,scope=>$lint_scope,name=>'Lint',branch=>'main',conclusion=>'success',at=>$ci_now-300,duration=>30,url=>$ci_url.'4'}),
+  normalize_ci_history_entry({id=>5,workflow_id=>101,scope=>$build_scope,name=>'Build',branch=>'main',conclusion=>'success',at=>$ci_now-200,duration=>80,url=>$ci_url.'5'}),
+ ];
+ my$rel30=ci_reliability_summary($ci_now);
+ push@t,$rel30->{state}eq'watch'&&$rel30->{runs}==5&&$rel30->{decisive_runs}==5&&$rel30->{success}==3&&$rel30->{failed}==2&&$rel30->{pass_rate}==60;
+ push@t,$rel30->{resolved_incidents}==1&&$rel30->{active_incidents}==0&&$rel30->{mttr_seconds}==600&&$rel30->{longest_recovery_seconds}==600;
+ push@t,$rel30->{p50_duration_seconds}==90&&$rel30->{p95_duration_seconds}==120&&$rel30->{green_streak}==3&&$rel30->{resolved}[0]{failures}==2;
+ my$rel_payload=ci_reliability_payload();push@t,$rel_payload->{retained_runs}==5&&$rel_payload->{retention}{days}==MAX_CI_DAYS&&$rel_payload->{retention}{max_runs}==MAX_CI_RUNS&&ref($rel_payload->{recent})eq'ARRAY';
+ my@ci_done=gmtime($ci_now-10);my@ci_started=gmtime($ci_now-70);
+ my$ci_done_iso=sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',$ci_done[5]+1900,$ci_done[4]+1,$ci_done[3],$ci_done[2],$ci_done[1],$ci_done[0]);
+ my$ci_started_iso=sprintf('%04d-%02d-%02dT%02d:%02d:%02dZ',$ci_started[5]+1900,$ci_started[4]+1,$ci_started[3],$ci_started[2],$ci_started[1],$ci_started[0]);
+ $STATE{ci_run_history}=[];my$raw_ci_run={id=>99,run_attempt=>2,workflow_id=>303,status=>'completed',conclusion=>'success',name=>'Release',head_branch=>'main',head_sha=>'abc123',run_started_at=>$ci_started_iso,updated_at=>$ci_done_iso,html_url=>$ci_url.'99',actor=>{login=>$owner}};
+ push@t,record_ci_run_history([$raw_ci_run])==1&&record_ci_run_history([$raw_ci_run])==0&&@{$STATE{ci_run_history}}==1&&$STATE{ci_run_history}[0]{duration}==60&&$STATE{ci_run_history}[0]{attempt}==2;
+ $STATE{ci_run_history}=[map{{%$_}}grep{defined}(@{$rel30->{recent}})];$STATE{ci_run_history}=[reverse@{$STATE{ci_run_history}}];
+ my$ci_dash=dashboard_html();my$ci_js=dashboard_js();push@t,$ci_dash=~/CI reliability/&&$ci_dash=~/id="ci-rel-pass"/&&$ci_dash=~/id="ci-rel-incidents"/&&$ci_dash=~/\?api=ci/;
+ push@t,$ci_js=~/function renderReliability\(d\)/&&$ci_js=~/ci_reliability/&&$ci_js=~/ci-rel-streak/&&$ci_js=~/const duration=/;
+ my$ci_metrics=prometheus_metrics();push@t,$ci_metrics=~/githubwatch_ci_reliability_pass_ratio 0\.600000/&&$ci_metrics=~/githubwatch_ci_mttr_seconds 600/&&$ci_metrics=~/githubwatch_ci_duration_p95_seconds 120/;
+ my$ci_status=status_payload();push@t,ref($ci_status->{ci_reliability})eq'HASH'&&$ci_status->{ci_reliability}{resolved_incidents}==1;
+ my$ci_wire='';open my$ci_fh,'>',\$ci_wire or die"CI reliability selftest: $!";binmode$ci_fh,':raw';my$ci_net={id=>'ci-test',label=>'CI test',up=>1,socket=>$ci_fh,nick=>'gitwatch'};my$ci_cd=$CFG{cmd_cooldown};$CFG{cmd_cooldown}=0;command($ci_net,'tester','#test','!github reliability');command($ci_net,'tester','#test','!github incidents');$CFG{cmd_cooldown}=$ci_cd;close$ci_fh;my$ci_text=decode('UTF-8',$ci_wire);push@t,$ci_text=~/CI reliability/&&$ci_text=~/60%/&&$ci_text=~/CI recovery/&&$ci_text=~/Latest recovery/;
+ $STATE{ci_bad_state}={$build_scope=>{run_id=>6,at=>$ci_now-60,conclusion=>'failure',name=>'Build',branch=>'main',url=>$ci_url.'6',attempt=>1,duration=>45}};my$rel_degraded=ci_reliability_summary($ci_now);push@t,$rel_degraded->{state}eq'degraded'&&$rel_degraded->{active_incidents}==1&&$rel_degraded->{active}[0]{name}eq'Build';
+ ($STATE{ci_run_history},$STATE{ci_bad_state},$CFG{actions_enabled})=($old_ci_history,$old_ci_bad,$old_ci_actions_enabled);
 
  # v0.28 keeps exact 14-day aggregates separate from accumulated daily
  # history, and exposes the latest clone/unique snapshot immediately.

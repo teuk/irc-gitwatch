@@ -90,7 +90,7 @@ curl --fail http://127.0.0.1:9510/status.json
 
 Useful one-shot checks are listed in the main README. `--doctor` performs network calls; `--selftest` is deterministic and does not require credentials.
 
-## Migrating an existing GitHubWatch v0.29 instance
+## Migrating or upgrading an existing GitHubWatch v0.29 instance
 
 1. Stop the old service cleanly so its latest state is saved.
 2. Back up its state and environment files.
@@ -100,4 +100,4 @@ Useful one-shot checks are listed in the main README. `--doctor` performs networ
 6. Run `--state-check`, `--config-check` and `--selftest`.
 7. Start only the new service.
 
-Do not run two instances against the same state file or IRC targets. The v0.29 state schema and metrics prefix are retained specifically to make this migration uneventful.
+Do not run two instances against the same state file or IRC targets. Version 0.30 retains the v0.29 state schema and metrics prefix specifically to make this migration uneventful. Its additive CI reliability history starts filling on the first successful Actions scan; no manual state migration is needed.

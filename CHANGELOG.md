@@ -2,6 +2,24 @@
 
 All notable changes are documented here. The project follows semantic intent while the original production version number is retained for the first public release.
 
+## 0.30 — 2026-08-30
+
+### Added
+
+- Bounded 30-day, 500-run GitHub Actions history using the existing Actions responses.
+- CI pass rate, decisive outcomes, active/resolved incident analysis, MTTR, longest recovery, p50/p95 runtime and green streak.
+- Live dashboard reliability panel and additive `ci_reliability` dashboard/status payload.
+- Read-only `/ci.json` and `/?api=ci` endpoints.
+- `!github reliability`, `!github slo` and `!github incidents` IRC commands.
+- Prometheus reliability, incident, recovery, duration and streak gauges.
+- Eleven deterministic regressions covering storage, deduplication, inference, IRC, JSON, metrics and dashboard rendering.
+
+### Compatibility
+
+- No additional GitHub request or token permission is required.
+- State schema 11, all v0.29 fields, routes, commands, metrics and inert public defaults are preserved.
+- Existing v0.29 state loads unchanged; CI reliability coverage begins populating on the next successful Actions scan.
+
 ## 0.29 — 2026-08-29
 
 Initial public release of IRC GitWatch.

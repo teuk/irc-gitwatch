@@ -19,6 +19,8 @@ Signed webhooks provide low latency. Repository event polling provides reconcili
 
 GitHub Actions, repository traffic, public account inventory and RSS each have independent adaptive schedules. Exactly one maintenance family advances per event-loop turn so an optional slow source does not monopolize local HTTP or IRC work.
 
+Completed Actions runs are normalized into a separate bounded history (30 days, at most 500 runs) during the existing Actions scan. Reliability and incident summaries are computed from that local state, so dashboard, IRC, JSON and Prometheus consumers do not create additional GitHub traffic.
+
 ## Delivery invariant
 
 One normalized announcement becomes one queue record with an explicit target set. Every network/channel acknowledges delivery independently. A record leaves the queue only after every target has succeeded; partial progress survives state saves and restarts.
@@ -31,7 +33,7 @@ The queue is bounded. When space is exhausted, eviction and partial-delivery los
 - Atomic temporary-file write and rename.
 - Mode `0600`.
 - Optional validated `.bak` recovery copy.
-- Bounded histories, IDs, fingerprints, delivery audits and account changes.
+- Bounded histories, IDs, fingerprints, delivery audits, CI runs and account changes.
 - Legacy activity text is repaired at display/serialization boundaries without rewriting unrelated strings.
 
 ## Scope and privacy invariant

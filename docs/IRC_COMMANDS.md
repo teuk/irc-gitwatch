@@ -19,6 +19,8 @@ IRC GitWatch commands are read-only, rate-limited and available in joined channe
 | Command | Result |
 | --- | --- |
 | `!github ci` | Latest CI state. |
+| `!github reliability` / `slo` | 30-day pass rate, outcomes, recovery, p95 runtime and green streak. |
+| `!github incidents` | Active incidents and the latest inferred recovery. |
 | `!github failures` | Current failing workflow/ref states. |
 | `!github flaky` | Detected flaky workflow/ref states. |
 | `!github running` | Running workflows. |

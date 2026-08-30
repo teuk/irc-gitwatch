@@ -71,6 +71,8 @@ Webhook and poll events share fingerprints so the same public activity is announ
 | `GITHUB_ACTIONS_FLAKY_WINDOW_SECONDS` | `0` | Failure/success transition window; `0` disables. |
 | `GITHUB_ACTIONS_FLAKY_TRANSITIONS` | `3` | Transitions required for a flaky alert. |
 
+Version 0.30 also retains up to 500 completed runs for 30 days and derives reliability, incident and runtime statistics from those already-fetched Actions responses. This is intentionally bounded and requires no extra variable, API request or GitHub permission.
+
 ## Traffic and account portfolio
 
 | Variable | Default | Meaning |
