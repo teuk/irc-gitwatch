@@ -1,0 +1,102 @@
+{
+  "state_version": 11,
+  "version": "0.30",
+  "saved_at": 1788000300,
+  "stats_version": 3,
+  "etag": "fixture-v030-etag",
+  "event_seen": {
+    "fixture-event-v030": 1788000300
+  },
+  "history": [
+    {
+      "text": "✓ CI: Build — SUCCESS on main @ def0300 — 1m — https://github.com/teuk/irc-gitwatch/actions/runs/30",
+      "source": "actions",
+      "at": 1788000300
+    }
+  ],
+  "ci_run_history": [
+    {
+      "id": 29,
+      "attempt": 1,
+      "workflow_id": 101,
+      "name": "Build",
+      "branch": "main",
+      "conclusion": "failure",
+      "at": 1787999700,
+      "started_at": 1787999640,
+      "duration": 60,
+      "sha": "abc0290",
+      "url": "https://github.com/teuk/irc-gitwatch/actions/runs/29"
+    },
+    {
+      "id": 30,
+      "attempt": 1,
+      "workflow_id": 101,
+      "name": "Build",
+      "branch": "main",
+      "conclusion": "success",
+      "at": 1788000300,
+      "started_at": 1788000240,
+      "duration": 60,
+      "sha": "def0300",
+      "url": "https://github.com/teuk/irc-gitwatch/actions/runs/30"
+    },
+    {
+      "id": 30,
+      "attempt": 1,
+      "workflow_id": 101,
+      "name": "Build duplicate",
+      "branch": "main",
+      "conclusion": "success",
+      "at": 1788000300,
+      "duration": 60,
+      "sha": "def0300",
+      "url": "https://github.com/teuk/irc-gitwatch/actions/runs/30"
+    }
+  ],
+  "traffic_clones": {
+    "count": 18,
+    "uniques": 7,
+    "clones": [
+      {
+        "timestamp": "2026-08-30T00:00:00Z",
+        "count": 18,
+        "uniques": 7
+      }
+    ]
+  },
+  "traffic_views": {
+    "count": 27,
+    "uniques": 10,
+    "views": [
+      {
+        "timestamp": "2026-08-30T00:00:00Z",
+        "count": 27,
+        "uniques": 10
+      }
+    ]
+  },
+  "traffic_history": {
+    "2026-08-30": {
+      "date": "2026-08-30",
+      "clones": 18,
+      "clone_uniques": 7,
+      "views": 27,
+      "view_uniques": 10
+    }
+  },
+  "account_changes": [
+    {
+      "at": 1788000300,
+      "repo": "teuk/irc-gitwatch",
+      "kind": "stars",
+      "from": "3",
+      "to": "4"
+    }
+  ],
+  "stats": {
+    "poll_sent": 5,
+    "poll_new": 5,
+    "actions_polls": 2
+  }
+}

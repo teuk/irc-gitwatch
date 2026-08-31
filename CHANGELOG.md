@@ -2,6 +2,29 @@
 
 All notable changes are documented here. The project follows semantic intent while the original production version number is retained for the first public release.
 
+## Unreleased
+
+### Added
+
+- Named deterministic self-test registry with `--selftest-list` and a cardinality guard against silently omitted assertions.
+- Explicit targeted, fast and full validation profiles with visible progress and fail-fast named checks.
+- Synthetic v0.29 and v0.30 persistent-state fixtures with 28 compatibility assertions.
+- Public CI coverage for Ubuntu 24.04, Debian 12 and Debian 13.
+- CI contract validation for platform coverage, immutable action references and disabled checkout credential persistence.
+
+### Security
+
+- Pin `actions/checkout` v7.0.1 to its full immutable commit SHA and disable persisted Git credentials.
+
+### Fixed
+
+- Avoid an uninitialized-value warning when loading a legacy scalar pending-delivery entry without an explicit id; generated identifiers and runtime behavior are unchanged.
+
+### Compatibility
+
+- No state schema, environment variable, route, IRC command, JSON field or Prometheus metric changed.
+- The v0.29 and v0.30 fixture contracts now make that promise executable in local and public CI.
+
 ## 0.30 — 2026-08-30
 
 ### Added

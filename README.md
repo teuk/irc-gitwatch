@@ -20,12 +20,13 @@ The project began as the production bot behind `teuk/mediabot_v3`. Release 0.30 
 - Read-only JSON, health and Prometheus endpoints.
 - Optional RSS/Atom announcements.
 - Defensive UTF-8 and legacy mojibake repair across IRC, state, JSON and HTML.
-- One executable, one state file, built-in diagnostics and 154 deterministic self-tests. No framework required — a pleasantly small bit of machinery with rather a lot under the cloak.
+- One executable, one state file, built-in diagnostics, 158 named deterministic self-tests and versioned state fixtures. No framework required — a pleasantly small bit of machinery with rather a lot under the cloak.
 
 ## Requirements
 
 - Perl 5.36 or newer.
 - Core modules shipped with Perl, plus `IO::Socket::SSL`.
+- `make` and Node.js for the complete contributor validation profile; neither is required by the running daemon.
 - A GitHub token is strongly recommended and is required for repository traffic statistics.
 - At least one IRC target enabled when notifications are wanted.
 
@@ -130,6 +131,7 @@ See [docs/IRC_COMMANDS.md](docs/IRC_COMMANDS.md) for the command families.
 ./irc-gitwatch.pl --version
 ./irc-gitwatch.pl --config-check
 ./irc-gitwatch.pl --selftest
+./irc-gitwatch.pl --selftest-list
 ./irc-gitwatch.pl --doctor
 ./irc-gitwatch.pl --state-check
 ./irc-gitwatch.pl --auth-check
@@ -141,11 +143,24 @@ See [docs/IRC_COMMANDS.md](docs/IRC_COMMANDS.md) for the command families.
 
 State writes are atomic, mode `0600`, and can keep a `.bak` recovery copy. SIGTERM and SIGINT trigger a clean state save and IRC quit.
 
+## Validation profiles
+
+The public test runner makes the cost and intent of every validation round explicit:
+
+```bash
+make test-targeted  # syntax, named self-tests and v0.29/v0.30 state fixtures
+make test-fast      # targeted plus configuration, CI-contract and dashboard JS checks
+make test-full      # fast plus credentials, public-tree and repository-hygiene gates
+make check          # alias for the full release gate
+```
+
+All profiles display progress and stop on the first failing named check. The two synthetic state documents under `t/fixtures/` are deliberately credential-free and lock backward compatibility without copying production state. Public CI runs the full gate independently on Ubuntu 24.04, Debian 12 and Debian 13.
+
 ## Compatibility contract
 
 Release 0.30 retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and every existing IRC command. Its new CI history is an optional additive state field, so an existing v0.29 state can be reused directly; reliability coverage fills from the first successful Actions scan.
 
-Run `make check` before every upgrade. The test suite runs once with the project defaults and once with an unrelated GitHub owner to guard against accidental `teuk` coupling.
+Run `make check` before every upgrade. The suite exercises project defaults and unrelated public-account configurations to guard against accidental `teuk` coupling, while the versioned fixtures prove that v0.29 and v0.30 state remain loadable.
 
 ## Documentation
 

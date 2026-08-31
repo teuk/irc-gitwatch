@@ -623,7 +623,7 @@ sub load_state {
      delivered=>ref($i->{delivered})eq'HASH'?{%{$i->{delivered}}}:{},counted=>$i->{counted}?1:0,
      id=>clean($i->{id}||''),targets=>ref($i->{targets})eq'ARRAY'?[map{clean($_)}@{$i->{targets}}]:[]};
    }
-   next unless$item;$item->{id}=broadcast_event_id($item->{source},$item->{text},$item->{created}) if$item->{id}eq'';
+   next unless$item;$item->{id}=broadcast_event_id($item->{source},$item->{text},$item->{created}) if($item->{id}//'')eq'';
    ensure_item_targets($item);push@q,$item;
   }
   splice@q,MAX_PENDING if@q>MAX_PENDING;$STATE{pending}=\@q;
@@ -3683,6 +3683,174 @@ sub graceful_shutdown { my($sig)=@_;return if$RUN{stopping};$RUN{stopping}=1;log
 $SIG{TERM}=sub{graceful_shutdown('SIGTERM')};$SIG{INT}=sub{graceful_shutdown('SIGINT')};
 
 # ── Built-in tests / CLI ─────────────────────────────────────────────────────
+sub selftest_names {
+ grep{length}split/\n/,<<'SELFTEST_NAMES';
+security.webhook.hmac-sha256
+security.constant-time-compare
+events.fingerprint.webhook-poll-equivalence
+events.fingerprint.sha-difference
+events.public-event-filter
+irc.control-code-cleaning
+events.push-zero-commit-format
+utf8.encoded-byte-length
+config.default-profile-valid
+dashboard.shell-contract
+security.dashboard-token-redacted
+security.dashboard-secret-redacted
+http.trailing-slash-normalization
+rss.rss2-item-count
+rss.rss2-cdata-title
+rss.rss2-entity-decoding
+rss.rss2-author-category
+rss.rss2-link
+rss.identity-stability
+rss.atom-title
+rss.atom-link
+rss.irc-format
+rss.dashboard-section
+utf8.xml-decoding
+utf8.windows1252-mojibake-repair
+utf8.latin1-mojibake-repair
+utf8.lossy-poll-repair
+utf8.lossy-rss-repair
+utf8.damaged-poll-repair
+utf8.damaged-rss-repair
+utf8.non-event-text-preserved
+irc.plain-text-control-stripping
+irc.compat-icons
+irc.compat-content
+irc.ascii-icons
+irc.emoji-icons
+security.bidi-control-removal
+rss.identity-ignores-title-edit
+dashboard.activity-control-stripping
+dashboard.legacy-activity-healing
+security.sha256-determinism
+ci.failed-run-normalization
+ci.webhook-poll-fingerprint
+ci.failed-run-format
+ci.success-announcement-policy
+delivery.all-targets-complete
+delivery.partial-target-detection
+ci.recovery-state-transition
+ci.recovery-announcement-policy
+irc.sasl-short-frame
+irc.sasl-long-frame-chunking
+irc.reconnect-backoff
+github.retry-after-rate-limit
+github.pagination-next-link
+ci.scope-key
+ci.failure-registration
+ci.failure-recovery-clear
+state.atomic-save-mode-0600
+state.v11-schema
+health.report-contract
+github.secondary-rate-limit-backoff
+github.success-resets-rate-streak
+github.expired-rate-limit-clear
+queue.bounded-drop-accounting
+ci.enrichment-rate-limit-fallback
+scheduler.disabled-jobs-idle
+history.recent-order-and-cleaning
+time.iso8601-and-duration
+ci.running-run-registration
+ci.running-run-completion
+ci.slow-run-format
+ci.expected-run-registration
+ci.expected-run-clear
+ci.seen-sha-prevents-expectation
+ci.missing-run-alert
+ci.duration-and-attempt-format
+ci.missing-run-format
+irc.disabled-heartbeat-idle
+ci.flaky-transition-detection
+ci.flaky-run-format
+webhook.rejection-accounting
+queue.snapshot-contract
+metrics.prometheus-contract-and-redaction
+state.atomic-raw-write
+state.document-read
+state.backup-creation
+state.status-primary-and-backup
+ops.degraded-and-recovered-format
+irc.undernet-two-channel-model
+delivery.epiknet-target-id
+delivery.undernet-target-id-uniqueness
+irc.keyed-join-command
+security.channel-key-redaction
+traffic.summary-aggregates
+traffic.daily-row-order
+traffic.history-merge
+traffic.history-retention
+traffic.latest-snapshot
+traffic.period-comparison
+traffic.unique-peak-summary
+traffic.github-unique-semantics
+traffic.top-referrer-order
+traffic.api-payload-contract
+traffic.dashboard-latest-snapshot
+traffic.irc-snapshot-command
+irc.undernet-key-default
+irc.channel-down-transition
+irc.channel-join-transition
+http.listener-without-webhook-secret
+account.public-repository-normalization
+account.private-and-foreign-filter
+account.portfolio-summary
+account.quality-and-trend-summary
+account.change-detection
+account.history-payload-contract
+account.json-utf8-roundtrip
+account.dashboard-contract
+account.prometheus-contract
+account.irc-command-contract
+ci.reliability-pass-ratio
+ci.reliability-recovery-summary
+ci.reliability-duration-and-streak
+ci.reliability-payload-retention
+ci.history-deduplication
+ci.reliability-dashboard-contract
+ci.reliability-javascript-contract
+ci.reliability-prometheus-contract
+ci.reliability-status-contract
+ci.reliability-irc-command-contract
+ci.reliability-active-incident
+dashboard.long-range-html-contract
+dashboard.long-range-javascript-contract
+dashboard.unique-audience-chart
+dashboard.no-raw-ip-label
+dashboard.audience-kpi-strip
+dashboard.unique-audience-javascript
+traffic.audience-trend-payload
+dashboard.live-layout-contract
+dashboard.component-poll-contract
+dashboard.polling-javascript-contract
+dashboard.chart-range-and-tooltip
+traffic.audience-field-contract
+traffic.trend-public-url-contract
+http.query-parameter-parser
+dashboard.api-payload-contract
+delivery.four-target-enqueue
+delivery.four-target-completion
+delivery.epiknet-wire-format
+delivery.libera-wire-format
+delivery.undernet-wire-format
+traffic.best-day-selection
+traffic.dashboard-render-regression
+http.sigpipe-ignored
+http.root-alias-normalization
+http.chunked-body-decoding
+http.json-utf8-single-encoding
+http.text-utf8-encoding
+status.api-contract
+SELFTEST_NAMES
+}
+sub active_selftest_names {
+ my@names=selftest_names();
+ push@names,'security.status-hook-secret-redacted'if$CFG{hook_secret}ne'';
+ push@names,'security.status-token-redacted'if$CFG{token}ne'';
+ @names;
+}
 sub selftest {
  my@t;
  push@t,hmac_sha256_hex('Hello, World!',q{It's a Secret to Everybody})eq'757107ea0eb2509fc211221cce984b8a37570b6d7586c22c46f4379c8b043e17';
@@ -3691,7 +3859,7 @@ sub selftest {
  my$po=normalize_poll({type=>'PushEvent',actor=>{login=>'octocat'},repo=>{name=>$CFG{repo}},payload=>{ref=>'refs/heads/master',head=>'abc123',size=>1,commits=>[{sha=>'abc123',message=>'hello'}]}});
  my%other=%$wh;$other{sha}='different';push@t,fingerprint($wh)eq fingerprint($po);push@t,fingerprint($wh)ne fingerprint(\%other);push@t,public_event('push')&&!public_event('secret_scanning_alert');
  push@t,clean("hello\x03".'04evil' . "\x02")eq'hello 04evil';push@t,format_event({kind=>'push',repo=>$CFG{repo},actor=>'teuk',ref=>'master',sha=>'abc123',count=>0,url=>'https://x'})!~/0 commits/;push@t,length(encode('UTF-8','ANONYMOUS — UTF-8 ✓'))>length('ANONYMOUS — UTF-8 ✓');push@t,!config_errors();
- my$html=dashboard_html();push@t,$html=~/<title>IRC GitWatch/&&$html=~/Read-only status page/;
+ my$html=dashboard_html();push@t,!!($html=~/<title>IRC GitWatch/&&$html=~/<main>/);
  push@t,$CFG{token}eq''||index($html,$CFG{token})<0;
  push@t,$CFG{hook_secret}eq''||index($html,$CFG{hook_secret})<0;
  push@t,normalized_http_path('/githubhook/') eq normalized_http_path('/githubhook');
@@ -3712,7 +3880,7 @@ sub selftest {
  my$ap=parse_rss($atom);
  push@t,ref($ap)eq'ARRAY'&&@$ap==1&&$ap->[0]{title}eq'Atom title';
  push@t,$ap->[0]{link}eq'https://teuk.org/forum/t/1';
- push@t,format_rss($rp->[0])=~/Forum/&&format_rss($rp->[0])=~/topic\/999/;
+ push@t,!!(format_rss($rp->[0])=~/Forum/&&format_rss($rp->[0])=~m{/t/999});
  push@t,index(dashboard_html(),'Forum RSS')>=0;
 
  my$utf8_original="📰 MB683 à Keep the Security Scroll";
@@ -3767,7 +3935,7 @@ sub selftest {
  push@t,$ci_api->{kind}eq'ci'&&ci_bad($ci_api->{conclusion})&&ci_should_announce($ci_api);
  push@t,fingerprint($ci_api)eq fingerprint($ci_hook);
  push@t,format_event($ci_api)=~/CI/&&format_event($ci_api)=~/FAILURE/;
- my$ci_ok={%$ci_api,conclusion=>'success'};push@t,!ci_should_announce($ci_ok) if$CFG{actions_fail_only};
+ my$ci_ok={%$ci_api,conclusion=>'success'};push@t,!$CFG{actions_fail_only}||!ci_should_announce($ci_ok);
 
  my@targets=enabled_targets();my$item={delivered=>{map{($_->{id}=>1)}@targets}};
  push@t,all_networks_delivered($item);
@@ -3775,7 +3943,7 @@ sub selftest {
 
  my$badci={%$ci_api};ci_track_state($badci);
  my$goodci={%$ci_api,conclusion=>'success',id=>4243};push@t,ci_track_state($goodci)&&$goodci->{recovery};
- push@t,ci_should_announce($goodci) if$CFG{actions_recovery};
+ push@t,!$CFG{actions_recovery}||ci_should_announce($goodci);
 
  my@short_sasl=sasl_plain_lines('user','pass');push@t,@short_sasl==1&&length($short_sasl[0])<=400;
  my@long_sasl=sasl_plain_lines('u'x250,'p'x250);push@t,@long_sasl>=2&&!grep{length($_)>400}@long_sasl;
@@ -3856,7 +4024,7 @@ sub selftest {
  $STATE{ci_expected}=$old_expected;$STATE{ci_sha_seen}=$old_seen_sha;$CFG{actions_expect}=$old_expect;$STATS{actions_missing_alerts}=$old_miss;$STATS{actions_expect_cleared}=$old_clear;
 
  my$durci=format_event({kind=>'ci',title=>'test-ci',conclusion=>'failure',ref=>'master',sha=>'abcdef123',attempt=>2,started_at=>100,completed_at=>165,url=>'https://x'});
- push@t,$durci=~/attempt/&&$durci=~/1m 5s/;
+ my$durci_plain=plain_irc($durci);push@t,!!($durci_plain=~/attempt 2/&&$durci_plain=~/\x{2014} 1m \x{2014}/);
  push@t,format_event({kind=>'ci_missing',sha=>'abcdef123',ref=>'master',started_at=>time-301,url=>'https://x'})=~/CI MISSING/;
  my$old_ping_cfg=$CFG{irc_idle_ping};$CFG{irc_idle_ping}=0;push@t,heartbeat_once()==0;$CFG{irc_idle_ping}=$old_ping_cfg;
 
@@ -4041,13 +4209,13 @@ sub selftest {
   {timestamp=>'2026-08-27T00:00:00Z',count=>7,uniques=>3},
  ],'count');
  push@t,ref($best3)eq'HASH'&&$best3->{count}==7&&$best3->{uniques}==3;
- my$old_render_tc={%{$STATE{traffic_clones}}};my$old_render_tv={%{$STATE{traffic_views}}};my$old_render_ok=$STATE{last_traffic_ok};
+ my$old_render_tc={%{$STATE{traffic_clones}}};my$old_render_tv={%{$STATE{traffic_views}}};my$old_render_ok=$STATE{last_traffic_ok};my$old_render_token=$CFG{token};
  $STATE{traffic_clones}={count=>9,uniques=>4,clones=>[{timestamp=>'2026-08-27T00:00:00Z',count=>9,uniques=>4}]};
  $STATE{traffic_views}={count=>13,uniques=>6,views=>[{timestamp=>'2026-08-27T00:00:00Z',count=>13,uniques=>6}]};
- $STATE{last_traffic_ok}=time;
+ $STATE{last_traffic_ok}=time;$CFG{token}='selftest-token';
  my$render_regression=eval{traffic_dashboard_html()};
- push@t,defined($render_regression)&&!$@&&$render_regression=~/Best view day/;
- $STATE{traffic_clones}=$old_render_tc;$STATE{traffic_views}=$old_render_tv;$STATE{last_traffic_ok}=$old_render_ok;
+ push@t,!!(defined($render_regression)&&!$@&&$render_regression=~/Best view day/);
+ $STATE{traffic_clones}=$old_render_tc;$STATE{traffic_views}=$old_render_tv;$STATE{last_traffic_ok}=$old_render_ok;$CFG{token}=$old_render_token;
 
  # v0.20.2 HTTP parser/proxy compatibility.
  push@t,defined($SIG{PIPE})&&$SIG{PIPE} eq'IGNORE';
@@ -4075,7 +4243,60 @@ sub selftest {
  push@t,index(encode_json($sp),$CFG{hook_secret})<0 if$CFG{hook_secret}ne'';
  push@t,index(encode_json($sp),$CFG{token})<0 if$CFG{token}ne'';
 
- my@bad=grep{!$t[$_]}0..$#t;my$bad=@bad;print APP_NAME.' '.VERSION.' selftest: '.($bad?'FAILED':'OK').' ('.(@t-$bad).'/'.scalar@t.")\n";print 'failed checks: '.join(',',map{$_+1}@bad)."\n"if$bad;$bad?1:0;
+ my@names=active_selftest_names();
+ if(@names!=@t){print APP_NAME.' '.VERSION.' selftest: FAILED (test registry '.scalar(@names).' != results '.scalar(@t).")\n";print "failed checks: selftest.registry-cardinality\n";return 1}
+ my@bad=grep{!$t[$_]}0..$#t;my$bad=@bad;print APP_NAME.' '.VERSION.' selftest: '.($bad?'FAILED':'OK').' ('.(@t-$bad).'/'.scalar@t.")\n";
+ print 'failed checks: '.join(',',map{($_+1).'('.$names[$_].')'}@bad)."\n"if$bad;
+ $bad?1:0;
+}
+sub fixture_check {
+ my($checks,$name,$value)=@_;
+ push@$checks,[$name,$value?1:0];
+}
+sub state_fixture_check_cli {
+ my($path,$expected)=@_;
+ if(!defined$path||$path eq''||!defined$expected||$expected!~/^v0\.(?:29|30)$/){
+  print STDERR "usage: ".APP_NAME." --state-fixture-check FILE v0.29|v0.30\n";
+  return 64;
+ }
+ my@checks;my($doc,undef,$err)=read_state_document($path);
+ fixture_check(\@checks,'fixture.document-readable',$doc&&$err eq'');
+ if(!$doc){
+  print APP_NAME." $expected state fixture: FAILED (0/1)\n";
+  print "failed checks: fixture.document-readable ($err)\n";
+  return 1;
+ }
+ fixture_check(\@checks,'fixture.schema-v11',int($doc->{state_version}||0)==11);
+ fixture_check(\@checks,'fixture.release-marker',clean($doc->{version}||'')eq substr($expected,1));
+
+ $CFG{account}='teuk';$CFG{state_file}=$path;$CFG{state_backup}=0;
+ load_state();
+ fixture_check(\@checks,'fixture.primary-load',$RUN{state_loaded_from}eq'primary');
+ fixture_check(\@checks,'fixture.event-marker',exists$STATE{event_seen}{'fixture-event-'.($expected eq'v0.29'?'v029':'v030')});
+ fixture_check(\@checks,'fixture.traffic-history-normalized',ref($STATE{traffic_history})eq'HASH'&&scalar(keys%{$STATE{traffic_history}})==1);
+ fixture_check(\@checks,'fixture.stats-schema-migrated',$STATE{stats_version}==3);
+ fixture_check(\@checks,'fixture.poll-counters-coherent',$STATS{poll_new}>=$STATS{poll_sent});
+
+ if($expected eq'v0.29'){
+  fixture_check(\@checks,'fixture.v029-array-traffic-source',ref($doc->{traffic_history})eq'ARRAY');
+  fixture_check(\@checks,'fixture.v029-legacy-pending-normalized',@{$STATE{pending}}==1&&ref($STATE{pending}[0])eq'HASH'&&$STATE{pending}[0]{id}ne''&&$STATE{pending}[0]{text}=~/abc0290/);
+  fixture_check(\@checks,'fixture.v029-history-preserved',@{$STATE{history}}==1&&$STATE{history}[0]{text}=~/abc0290/);
+  fixture_check(\@checks,'fixture.v029-ci-history-optional',!exists($doc->{ci_run_history})&&@{$STATE{ci_run_history}}==0);
+  fixture_check(\@checks,'fixture.v029-public-account-preserved',@{$STATE{account_repos}}==1&&$STATE{account_repos}[0]{full_name}eq'teuk/irc-gitwatch');
+  fixture_check(\@checks,'fixture.v029-poll-new-migration',$STATS{poll_new}==4&&$STATS{poll_sent}==4);
+ }else{
+  fixture_check(\@checks,'fixture.v030-ci-source-has-duplicate',ref($doc->{ci_run_history})eq'ARRAY'&&@{$doc->{ci_run_history}}==3);
+  fixture_check(\@checks,'fixture.v030-ci-history-deduplicated',@{$STATE{ci_run_history}}==2);
+  fixture_check(\@checks,'fixture.v030-ci-history-sorted',$STATE{ci_run_history}[0]{id}==29&&$STATE{ci_run_history}[1]{id}==30);
+  fixture_check(\@checks,'fixture.v030-ci-history-normalized',$STATE{ci_run_history}[1]{key}eq'30:1:success'&&$STATE{ci_run_history}[1]{duration}==60);
+  fixture_check(\@checks,'fixture.v030-account-change-preserved',@{$STATE{account_changes}}==1&&$STATE{account_changes}[0]{kind}eq'stars');
+  fixture_check(\@checks,'fixture.v030-map-traffic-source',ref($doc->{traffic_history})eq'HASH');
+ }
+
+ my@bad=grep{!$checks[$_][1]}0..$#checks;my$bad=@bad;
+ print APP_NAME." $expected state fixture: ".($bad?'FAILED':'OK').' ('.(@checks-$bad).'/'.scalar(@checks).")\n";
+ print 'failed checks: '.join(',',map{$checks[$_][0]}@bad)."\n"if$bad;
+ $bad?1:0;
 }
 sub doctor_line {
  my($kind,$name,$detail)=@_;$detail//=q{};
@@ -4212,7 +4433,9 @@ sub summary {
 
 if(@ARGV){
  if($ARGV[0]eq'--version'){print APP_NAME.' '.VERSION."\n";exit 0}
+ if($ARGV[0]eq'--selftest-list'){my@names=active_selftest_names();printf "%03d %s\n",$_+1,$names[$_]for 0..$#names;exit 0}
  if($ARGV[0]eq'--selftest'){exit selftest()}
+ if($ARGV[0]eq'--state-fixture-check'){exit state_fixture_check_cli($ARGV[1],$ARGV[2])}
  if($ARGV[0]eq'--config-check'){summary();exit config_check()}
  if($ARGV[0]eq'--doctor'){exit doctor()}
  if($ARGV[0]eq'--http-check'){exit http_check_cli()}

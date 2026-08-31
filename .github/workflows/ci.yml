@@ -9,17 +9,48 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-latest
+  ubuntu:
+    name: Ubuntu 24.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - name: Check out source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes libio-socket-ssl-perl
+          sudo apt-get install --yes --no-install-recommends libio-socket-ssl-perl
+
+      - name: Run deterministic checks
+        run: make check
+
+  debian:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian 12
+            image: debian:12-slim
+          - name: Debian 13
+            image: debian:13-slim
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install runtime dependencies
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            ca-certificates git make nodejs perl libio-socket-ssl-perl
+
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Run deterministic checks
         run: make check

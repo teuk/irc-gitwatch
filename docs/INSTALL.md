@@ -9,11 +9,19 @@ sudo apt-get update
 sudo apt-get install perl libio-socket-ssl-perl ca-certificates
 ```
 
+For source validation or contribution work, also install the developer-only tools:
+
+```bash
+sudo apt-get install make nodejs git
+```
+
 Verify the source before installing:
 
 ```bash
 make check
 ```
+
+That command runs the full public release gate. During development, `make test-targeted` and `make test-fast` provide shorter feedback loops; see the main README for the exact coverage of each profile.
 
 ## Automated systemd installation
 

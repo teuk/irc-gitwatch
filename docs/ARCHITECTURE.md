@@ -63,3 +63,15 @@ Treat these as public interfaces:
 - webhook verification and deduplication behavior.
 
 Every change to one of these surfaces needs a deterministic regression check and a changelog note.
+
+## Validation invariant
+
+Validation is layered so development feedback stays quick without weakening the release gate:
+
+- `targeted` checks TLS availability, Perl syntax, the named built-in registry and both retained state contracts;
+- `fast` adds unrelated-account configurations, the public CI contract and dashboard JavaScript syntax;
+- `full` adds credential discovery, the exact public-tree contract and Git repository hygiene.
+
+The v0.29 and v0.30 fixtures are intentionally small synthetic documents. They exercise scalar and structured pending delivery, retained CI history, unknown additive fields and normalization bounds without containing a production token, channel or state dump.
+
+Public CI executes the full profile on Ubuntu 24.04 and in Debian 12/13 job containers. Every reusable GitHub Action is referenced by a full commit SHA, and checkout credentials are removed before the test steps run.

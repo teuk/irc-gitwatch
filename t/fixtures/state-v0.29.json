@@ -1,0 +1,88 @@
+{
+  "state_version": 11,
+  "version": "0.29",
+  "saved_at": 1788000000,
+  "stats_version": 2,
+  "etag": "fixture-v029-etag",
+  "event_seen": {
+    "fixture-event-v029": 1788000000
+  },
+  "pending": [
+    "↑ GitHub: fixture updated main @ abc0290 — https://github.com/teuk/irc-gitwatch/commit/abc0290"
+  ],
+  "history": [
+    {
+      "text": "↑ GitHub: fixture updated main @ abc0290 — https://github.com/teuk/irc-gitwatch/commit/abc0290",
+      "source": "poll",
+      "at": 1788000000
+    }
+  ],
+  "traffic_clones": {
+    "count": 14,
+    "uniques": 5,
+    "clones": [
+      {
+        "timestamp": "2026-08-29T00:00:00Z",
+        "count": 14,
+        "uniques": 5
+      }
+    ]
+  },
+  "traffic_views": {
+    "count": 21,
+    "uniques": 8,
+    "views": [
+      {
+        "timestamp": "2026-08-29T00:00:00Z",
+        "count": 21,
+        "uniques": 8
+      }
+    ]
+  },
+  "traffic_history": [
+    {
+      "date": "2026-08-29",
+      "clones": 14,
+      "clone_uniques": 5,
+      "views": 21,
+      "view_uniques": 8
+    }
+  ],
+  "account_repos": [
+    {
+      "id": 29,
+      "name": "irc-gitwatch",
+      "full_name": "teuk/irc-gitwatch",
+      "owner": {
+        "login": "teuk"
+      },
+      "private": false,
+      "html_url": "https://github.com/teuk/irc-gitwatch",
+      "description": "Public fixture repository",
+      "stargazers_count": 3,
+      "forks_count": 1,
+      "open_issues_count": 0,
+      "topics": [
+        "irc",
+        "perl"
+      ]
+    }
+  ],
+  "account_history": {
+    "2026-08-29": {
+      "repositories": 1,
+      "maintained": 1,
+      "active_30d": 1,
+      "archived": 0,
+      "stale": 0,
+      "stars": 3,
+      "forks": 1,
+      "open_issues": 0
+    }
+  },
+  "stats": {
+    "poll_sent": 4,
+    "poll_new": 0,
+    "broadcast_enqueued": 1
+  }
+}
