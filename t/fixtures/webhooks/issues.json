@@ -1,0 +1,17 @@
+{
+  "action": "opened",
+  "repository": {
+    "id": 1296269,
+    "full_name": "octocat/Hello-World"
+  },
+  "sender": {
+    "login": "hubot"
+  },
+  "issue": {
+    "id": 2001,
+    "number": 17,
+    "title": "Synthetic issue",
+    "updated_at": "2026-08-31T12:00:00Z",
+    "html_url": "https://github.com/octocat/Hello-World/issues/17"
+  }
+}

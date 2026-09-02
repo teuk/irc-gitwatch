@@ -1,0 +1,12 @@
+{
+  "action": "opened",
+  "sender": {
+    "login": "example-user"
+  },
+  "issue": {
+    "id": 6002,
+    "number": 2,
+    "title": "Missing repository",
+    "updated_at": "2026-08-31T12:04:00Z"
+  }
+}

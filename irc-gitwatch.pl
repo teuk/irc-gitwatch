@@ -182,7 +182,7 @@ sub config_errors {
 sub config_check { my @e=config_errors(); logmsg('ERROR',$_) for @e; logmsg('INFO','Configuration check: OK') unless @e; @e?1:0 }
 
 # ── Process state ─────────────────────────────────────────────────────────────
-my %STATS=map {($_=>0)} qw(hook_received hook_valid hook_sent hook_dupe hook_invalid hook_suppressed hook_bad_signature hook_missing_headers hook_bad_json hook_wrong_repo hook_read_rejected hook_disabled_requests http_requests http_bad_requests http_chunked_requests http_expect_continue hook_root_alias_hits dashboard_api_requests dashboard_api_errors poll_runs poll_pages poll_gap poll_new poll_sent poll_not_modified poll_errors actions_polls actions_pages actions_gap actions_new actions_sent actions_not_modified actions_errors actions_failures actions_success actions_recoveries actions_enriched actions_enrich_skipped actions_slow_alerts actions_missing_alerts actions_expect_cleared actions_flaky_alerts traffic_cycles traffic_requests traffic_errors traffic_forbidden account_polls account_pages account_not_modified account_errors account_repos_seen account_changes_detected broadcast_enqueued broadcast_completed broadcast_delivery_attempts broadcast_delivery_failures queue_dropped queue_partial_dropped rate_limit_hits irc_epiknet_sent irc_libera_sent irc_undernet_sent irc_undernet_teuk_sent irc_undernet_miaw_sent irc_epiknet_reconnects irc_libera_reconnects irc_undernet_reconnects irc_heartbeat_pings irc_heartbeat_timeouts irc_join_retries irc_join_rejects http_listener_starts command_throttled state_backups state_recoveries state_save_errors ops_degraded_alerts ops_recovery_alerts rss_polls rss_new rss_sent rss_not_modified rss_unchanged rss_errors);
+my %STATS=map {($_=>0)} qw(hook_received hook_valid hook_sent hook_dupe hook_invalid hook_suppressed hook_bad_signature hook_bad_content_type hook_missing_headers hook_bad_json hook_wrong_repo hook_read_rejected hook_disabled_requests http_requests http_bad_requests http_chunked_requests http_expect_continue hook_root_alias_hits dashboard_api_requests dashboard_api_errors poll_runs poll_pages poll_gap poll_new poll_sent poll_not_modified poll_errors actions_polls actions_pages actions_gap actions_new actions_sent actions_not_modified actions_errors actions_failures actions_success actions_recoveries actions_enriched actions_enrich_skipped actions_slow_alerts actions_missing_alerts actions_expect_cleared actions_flaky_alerts traffic_cycles traffic_requests traffic_errors traffic_forbidden account_polls account_pages account_not_modified account_errors account_repos_seen account_changes_detected broadcast_enqueued broadcast_completed broadcast_delivery_attempts broadcast_delivery_failures queue_dropped queue_partial_dropped rate_limit_hits irc_epiknet_sent irc_libera_sent irc_undernet_sent irc_undernet_teuk_sent irc_undernet_miaw_sent irc_epiknet_reconnects irc_libera_reconnects irc_undernet_reconnects irc_heartbeat_pings irc_heartbeat_timeouts irc_join_retries irc_join_rejects http_listener_starts command_throttled state_backups state_recoveries state_save_errors ops_degraded_alerts ops_recovery_alerts rss_polls rss_new rss_sent rss_not_modified rss_unchanged rss_errors);
 my %STATE=(etag=>'',event_seen=>{},deliveries=>{},fingerprints=>{},pending=>[],history=>[],broadcast_seq=>0,broadcast_history=>[],delivery_stats=>{},last_hook_ok=>0,last_hook_event=>'',last_hook_reject_reason=>'',last_hook_reject_at=>0,last_event_text=>'',last_event_source=>'',last_event_at=>0,actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],ci_run_history=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0,account_etag=>'',account_repos=>[],account_history=>{},account_changes=>[],last_account_ok=>0,rss_seen=>{},rss_etag=>'',rss_modified=>'',last_rss_ok=>0,last_rss_title=>'',last_rss_link=>'',rss_id_version=>0,rss_text_version=>0,rss_digest=>'',stats_version=>0,ops_health_key=>'',ops_health_since=>0,ops_health_alerted=>0,ops_degraded_announced=>0);
 my %RUN=(
  started=>time, stopping=>0,
@@ -724,7 +724,9 @@ sub save_state {
 
 # ── Event privacy / identity ─────────────────────────────────────────────────
 my%PRIVATE_EVENT=map{($_=>1)}qw(code_scanning_alert dependabot_alert repository_vulnerability_alert secret_scanning_alert secret_scanning_alert_location secret_scanning_scan security_advisory security_and_analysis);
+my%SUPPORTED_HOOK_EVENT=map{($_=>1)}qw(ping push issues issue_comment pull_request pull_request_review pull_request_review_comment pull_request_review_thread release create delete fork star discussion discussion_comment workflow_run workflow_job check_run check_suite status deployment deployment_status repository commit_comment branch_protection_rule label milestone member page_build public merge_group);
 sub public_event { !$PRIVATE_EVENT{$_[0]} }
+sub supported_hook_event { $SUPPORTED_HOOK_EVENT{$_[0]}?1:0 }
 sub fingerprint {
  my($e)=@_;my$k=$e->{kind}//'generic';my$r=$e->{repo}//$CFG{repo};my@p;
  @p=($k,$r,$e->{ref},$e->{sha}) if$k eq'push';
@@ -2895,7 +2897,7 @@ function renderBroadcast(d){
 
 function renderCounters(d){
   const c=d.counters||{},w=c.webhook||{},g=c.github_poll||{},a=c.actions||{},r=c.rss||{},t=c.traffic||{},p=c.account||{},b=d.broadcast||{};
-  txt('counter-webhook',`recv ${num(w.received)} · valid ${num(w.valid)} · sent ${num(w.sent)} · rejected ${num(w.rejected)} · sig ${num(w.bad_signature)} · json ${num(w.invalid_json)}`);
+  txt('counter-webhook',`recv ${num(w.received)} · valid ${num(w.valid)} · sent ${num(w.sent)} · dupes ${num(w.duplicates)} · hidden ${num(w.suppressed)} · rejected ${num(w.rejected)} · sig ${num(w.bad_signature)} · media ${num(w.bad_content_type)} · json ${num(w.invalid_json)}`);
   txt('counter-events',`runs ${num(g.runs)} · pages ${num(g.pages)} · new ${num(g.new)} · sent ${num(g.sent)} · 304 ${num(g.not_modified)} · errors ${num(g.errors)}`);
   txt('counter-actions',`polls ${num(a.polls)} · new ${num(a.new)} · failures ${num(a.failures)} · recovered ${num(a.recoveries)} · sent ${num(a.sent)} · errors ${num(a.errors)}`);
   txt('counter-broadcast',`enqueued ${num(b.enqueued)} · complete ${num(b.completed)} · attempts ${num(b.delivery_attempts)} · failures ${num(b.delivery_failures)}`);
@@ -3066,7 +3068,7 @@ sub dashboard_html {
  my@hist=recent_history($CFG{history_show});my$history_html='';
  for my$h(@hist){$history_html.='<div class="history-row"><span class="source">'.html_escape(uc($h->{source}||'event')).'</span> <span class="muted">'.html_escape($h->{at}?age($h->{at}):'time unknown').'</span> '.html_linkify(repair_activity_text($h->{text},$h->{source})).'</div>'}
  $history_html='<div class="small">No activity history yet</div>' if$history_html eq'';
- my$hook_stats=html_escape("recv $STATS{hook_received} · valid $STATS{hook_valid} · sent $STATS{hook_sent} · dupes $STATS{hook_dupe} · rejected $STATS{hook_invalid} · sig $STATS{hook_bad_signature} · hdr $STATS{hook_missing_headers} · json $STATS{hook_bad_json} · repo $STATS{hook_wrong_repo}");
+ my$hook_stats=html_escape("recv $STATS{hook_received} · valid $STATS{hook_valid} · sent $STATS{hook_sent} · dupes $STATS{hook_dupe} · hidden $STATS{hook_suppressed} · rejected $STATS{hook_invalid} · sig $STATS{hook_bad_signature} · media $STATS{hook_bad_content_type} · hdr $STATS{hook_missing_headers} · json $STATS{hook_bad_json} · repo $STATS{hook_wrong_repo}");
  my$poll_stats=html_escape("runs $STATS{poll_runs} · pages $STATS{poll_pages} · new $STATS{poll_new} · sent $STATS{poll_sent} · 304 $STATS{poll_not_modified} · gaps $STATS{poll_gap} · errors $STATS{poll_errors}");
  my$actions_stats=html_escape("polls $STATS{actions_polls} · pages $STATS{actions_pages} · new $STATS{actions_new} · failures $STATS{actions_failures} · recovered $STATS{actions_recoveries} · slow $STATS{actions_slow_alerts} · missing $STATS{actions_missing_alerts} · flaky $STATS{actions_flaky_alerts} · sent $STATS{actions_sent} · enriched $STATS{actions_enriched} · enrich skipped $STATS{actions_enrich_skipped} · 304 $STATS{actions_not_modified} · gaps $STATS{actions_gap} · errors $STATS{actions_errors}");
  my$rss_stats=html_escape("polls $STATS{rss_polls} · new $STATS{rss_new} · sent $STATS{rss_sent} · 304 $STATS{rss_not_modified} · same $STATS{rss_unchanged} · errors $STATS{rss_errors}");
@@ -3234,13 +3236,13 @@ sub status_payload {
    targets=>\@targets,
    heartbeat=>{idle_ping_seconds=>$CFG{irc_idle_ping},pong_timeout_seconds=>$CFG{irc_pong_timeout},timeouts=>$STATS{irc_heartbeat_timeouts}},
   },
-  webhook=>webhook_state(),webhook_detail=>{last_reject_reason=>$STATE{last_hook_reject_reason}||'',last_reject_at=>$STATE{last_hook_reject_at}||0,bad_signature=>$STATS{hook_bad_signature},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected}},
+  webhook=>webhook_state(),webhook_detail=>{last_reject_reason=>$STATE{last_hook_reject_reason}||'',last_reject_at=>$STATE{last_hook_reject_at}||0,duplicates=>$STATS{hook_dupe},suppressed=>$STATS{hook_suppressed},bad_signature=>$STATS{hook_bad_signature},bad_content_type=>$STATS{hook_bad_content_type},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected}},
   github_api=>api_state(),github_actions=>actions_state(),ci_reliability=>ci_reliability_summary(),github_traffic=>{%{traffic_payload()},render_error=>$RUN{traffic_render_error}||''},github_account=>account_status_payload(),broadcast=>broadcast_payload(),
   current_ci_failures=>current_ci_failure_count(),current_ci_running=>current_ci_running_count(),current_ci_expected=>current_ci_expected_count(),current_ci_flaky=>current_ci_flaky_count(),auth=>auth_short(),rss=>rss_state(),
   health=>health_report(),http_listener=>{listening=>$RUN{listener}?1:0,started_at=>$RUN{http_listener_started}||0,error=>$RUN{http_listener_error}||'',bind=>$CFG{hook_bind},port=>$CFG{hook_port},last_at=>$RUN{http_last_at}||0,last_method=>$RUN{http_last_method}||'',last_path=>$RUN{http_last_path}||'',last_status=>$RUN{http_last_status}||0,root_post_alias=>$CFG{hook_root_alias}?1:0},state=>state_status(),ops_alerts=>{enabled=>$CFG{ops_alerts}?1:0,debounce_seconds=>$CFG{ops_debounce},degraded=>$STATS{ops_degraded_alerts},recovered=>$STATS{ops_recovery_alerts}},github_rate=>{remaining=>$RUN{rate_remaining},limit=>$RUN{rate_limit},reset=>$RUN{rate_reset},blocked_until=>$RUN{rate_block_until}||0,reason=>$RUN{rate_block_reason}||''},
   queue=>scalar(@{$STATE{pending}}),queue_detail=>queue_snapshot(),history_count=>scalar(@{$STATE{history}}),last_event_source=>$STATE{last_event_source}||'',last_event_at=>$STATE{last_event_at}||0,
   counters=>{
-   webhook=>{received=>$STATS{hook_received},valid=>$STATS{hook_valid},sent=>$STATS{hook_sent},rejected=>$STATS{hook_invalid},bad_signature=>$STATS{hook_bad_signature},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected},disabled=>$STATS{hook_disabled_requests}},
+   webhook=>{received=>$STATS{hook_received},valid=>$STATS{hook_valid},sent=>$STATS{hook_sent},duplicates=>$STATS{hook_dupe},suppressed=>$STATS{hook_suppressed},rejected=>$STATS{hook_invalid},bad_signature=>$STATS{hook_bad_signature},bad_content_type=>$STATS{hook_bad_content_type},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected},disabled=>$STATS{hook_disabled_requests}},
    github_poll=>{runs=>$STATS{poll_runs},pages=>$STATS{poll_pages},gaps=>$STATS{poll_gap},new=>$STATS{poll_new},sent=>$STATS{poll_sent},not_modified=>$STATS{poll_not_modified},errors=>$STATS{poll_errors}},
    actions=>{polls=>$STATS{actions_polls},pages=>$STATS{actions_pages},gaps=>$STATS{actions_gap},new=>$STATS{actions_new},failures=>$STATS{actions_failures},recoveries=>$STATS{actions_recoveries},slow_alerts=>$STATS{actions_slow_alerts},missing_alerts=>$STATS{actions_missing_alerts},flaky_alerts=>$STATS{actions_flaky_alerts},expect_cleared=>$STATS{actions_expect_cleared},sent=>$STATS{actions_sent},enriched=>$STATS{actions_enriched},enrich_skipped=>$STATS{actions_enrich_skipped},not_modified=>$STATS{actions_not_modified},errors=>$STATS{actions_errors}},
    traffic=>{cycles=>$STATS{traffic_cycles},requests=>$STATS{traffic_requests},errors=>$STATS{traffic_errors},forbidden=>$STATS{traffic_forbidden}},
@@ -3338,7 +3340,7 @@ sub prometheus_metrics {
  push@out,'# TYPE githubwatch_github_rest_limited gauge';push@out,'githubwatch_github_rest_limited '.$limited;
  my$ss=state_status();push@out,'# TYPE githubwatch_state_primary_valid gauge';push@out,'githubwatch_state_primary_valid '.($ss->{primary}eq'ok'?1:0);push@out,'# TYPE githubwatch_state_backup_valid gauge';push@out,'githubwatch_state_backup_valid '.($ss->{backup}eq'ok'?1:0);push@out,'# TYPE githubwatch_ops_alerts_enabled gauge';push@out,'githubwatch_ops_alerts_enabled '.($CFG{ops_alerts}?1:0);
  my@c=(
-  ['githubwatch_http_requests_total',$STATS{http_requests}],['githubwatch_dashboard_api_requests_total',$STATS{dashboard_api_requests}],['githubwatch_dashboard_api_errors_total',$STATS{dashboard_api_errors}],['githubwatch_http_bad_requests_total',$STATS{http_bad_requests}],['githubwatch_http_chunked_requests_total',$STATS{http_chunked_requests}],['githubwatch_http_expect_continue_total',$STATS{http_expect_continue}],['githubwatch_webhook_root_alias_hits_total',$STATS{hook_root_alias_hits}],['githubwatch_webhook_received_total',$STATS{hook_received}],['githubwatch_webhook_valid_total',$STATS{hook_valid}],['githubwatch_webhook_rejected_total',$STATS{hook_invalid}],['githubwatch_webhook_bad_signature_total',$STATS{hook_bad_signature}],['githubwatch_webhook_missing_headers_total',$STATS{hook_missing_headers}],['githubwatch_webhook_invalid_json_total',$STATS{hook_bad_json}],['githubwatch_webhook_wrong_repo_total',$STATS{hook_wrong_repo}],['githubwatch_webhook_read_rejected_total',$STATS{hook_read_rejected}],
+  ['githubwatch_http_requests_total',$STATS{http_requests}],['githubwatch_dashboard_api_requests_total',$STATS{dashboard_api_requests}],['githubwatch_dashboard_api_errors_total',$STATS{dashboard_api_errors}],['githubwatch_http_bad_requests_total',$STATS{http_bad_requests}],['githubwatch_http_chunked_requests_total',$STATS{http_chunked_requests}],['githubwatch_http_expect_continue_total',$STATS{http_expect_continue}],['githubwatch_webhook_root_alias_hits_total',$STATS{hook_root_alias_hits}],['githubwatch_webhook_received_total',$STATS{hook_received}],['githubwatch_webhook_valid_total',$STATS{hook_valid}],['githubwatch_webhook_duplicate_total',$STATS{hook_dupe}],['githubwatch_webhook_suppressed_total',$STATS{hook_suppressed}],['githubwatch_webhook_rejected_total',$STATS{hook_invalid}],['githubwatch_webhook_bad_signature_total',$STATS{hook_bad_signature}],['githubwatch_webhook_bad_content_type_total',$STATS{hook_bad_content_type}],['githubwatch_webhook_missing_headers_total',$STATS{hook_missing_headers}],['githubwatch_webhook_invalid_json_total',$STATS{hook_bad_json}],['githubwatch_webhook_wrong_repo_total',$STATS{hook_wrong_repo}],['githubwatch_webhook_read_rejected_total',$STATS{hook_read_rejected}],
   ['githubwatch_events_polls_total',$STATS{poll_runs}],['githubwatch_events_errors_total',$STATS{poll_errors}],
   ['githubwatch_actions_polls_total',$STATS{actions_polls}],['githubwatch_actions_failures_total',$STATS{actions_failures}],['githubwatch_actions_recoveries_total',$STATS{actions_recoveries}],['githubwatch_actions_slow_alerts_total',$STATS{actions_slow_alerts}],['githubwatch_actions_missing_alerts_total',$STATS{actions_missing_alerts}],['githubwatch_actions_flaky_alerts_total',$STATS{actions_flaky_alerts}],['githubwatch_actions_errors_total',$STATS{actions_errors}],
   ['githubwatch_broadcast_enqueued_total',$STATS{broadcast_enqueued}],['githubwatch_broadcast_completed_total',$STATS{broadcast_completed}],['githubwatch_broadcast_delivery_attempts_total',$STATS{broadcast_delivery_attempts}],['githubwatch_broadcast_delivery_failures_total',$STATS{broadcast_delivery_failures}],
@@ -3395,7 +3397,7 @@ sub http_write_all {
 }
 sub http_response {
  my($c,$code,$type,$body,$head_only,$body_is_bytes)=@_;
- my%r=(100=>'Continue',200=>'OK',202=>'Accepted',400=>'Bad Request',401=>'Unauthorized',404=>'Not Found',405=>'Method Not Allowed',411=>'Length Required',413=>'Payload Too Large',417=>'Expectation Failed',500=>'Internal Server Error',503=>'Service Unavailable');
+ my%r=(100=>'Continue',200=>'OK',202=>'Accepted',400=>'Bad Request',401=>'Unauthorized',404=>'Not Found',405=>'Method Not Allowed',411=>'Length Required',413=>'Payload Too Large',415=>'Unsupported Media Type',417=>'Expectation Failed',500=>'Internal Server Error',503=>'Service Unavailable');
  $body//=q{};my$b=$body_is_bytes?$body:encode('UTF-8',$body);
  my$h="HTTP/1.1 $code ".($r{$code}||'Status')."\r\n".
        "Content-Type: $type; charset=utf-8\r\n".
@@ -3494,8 +3496,12 @@ sub read_http {
 }
 sub note_hook_reject {
  my($reason)=@_;$reason=clean($reason||'rejected');$STATE{last_hook_reject_reason}=$reason;$STATE{last_hook_reject_at}=int(time);
- my%map=(bad_signature=>'hook_bad_signature',missing_headers=>'hook_missing_headers',invalid_json=>'hook_bad_json',wrong_repository=>'hook_wrong_repo',read_rejected=>'hook_read_rejected',disabled=>'hook_disabled_requests');
+ my%map=(bad_signature=>'hook_bad_signature',unsupported_media_type=>'hook_bad_content_type',missing_headers=>'hook_missing_headers',invalid_json=>'hook_bad_json',wrong_repository=>'hook_wrong_repo',read_rejected=>'hook_read_rejected',disabled=>'hook_disabled_requests');
  my$k=$map{$reason};$STATS{$k}++ if$k&&exists$STATS{$k};1;
+}
+sub webhook_json_content_type {
+ my($raw)=@_;my($media)=split/;/,lc(clean($raw||'')),2;$media=clean($media);
+ $media eq'application/json'||$media=~m{^application/[a-z0-9.!#$&^_+-]+\+json$};
 }
 sub hook_reject {
  my($c,$code,$reason,$body)=@_;$STATS{hook_invalid}++ unless$reason eq'disabled';note_hook_reject($reason);http_reply($c,$code,$body||'rejected');0;
@@ -3590,6 +3596,9 @@ sub handle_hook {
  if(!cteq($h->{'x-hub-signature-256'}||'',$expected)){
   hook_reject($c,401,'bad_signature','bad signature');return
  }
+ if(!webhook_json_content_type($h->{'content-type'}||'')){
+  hook_reject($c,415,'unsupported_media_type','application/json required');return
+ }
 
  my$event=clean($h->{'x-github-event'}||'');
  my$delivery=clean($h->{'x-github-delivery'}||'');
@@ -3598,12 +3607,12 @@ sub handle_hook {
 
  my$p=eval{decode_json($body)};
  if(!$p||ref$p ne'HASH'){hook_reject($c,400,'invalid_json','invalid JSON');return}
- my$pr=$p->{repository}{full_name};
- if($event ne'ping'&&defined$pr&&$pr ne$CFG{repo}){hook_reject($c,401,'wrong_repository','wrong repository');return}
+ my$pr=ref($p->{repository})eq'HASH'?clean($p->{repository}{full_name}||''):'';
+ if($event ne'ping'&&lc($pr)ne lc($CFG{repo})){hook_reject($c,401,'wrong_repository','wrong repository');return}
 
  $STATS{hook_valid}++;$STATE{last_hook_ok}=time;$STATE{last_hook_event}=$event;$STATE{deliveries}{$delivery}=time;
  if($event eq'ping'){save_state();http_reply($c,200,'pong');return}
- if(!public_event($event)){$STATS{hook_suppressed}++;save_state();http_reply($c,202,'accepted but hidden');return}
+ if(!public_event($event)||!supported_hook_event($event)){$STATS{hook_suppressed}++;save_state();http_reply($c,202,'accepted but hidden');return}
 
  my$n=normalize_hook($event,$p);kick_actions()if($n->{kind}||'')eq'push';
  if(($n->{kind}||'')eq'ci'){
@@ -3632,6 +3641,23 @@ sub drop_http_listener {
 sub ensure_http_listener {
  return 1 if$RUN{listener};return 0 if time<($RUN{next_http_retry}||0);
  my$ok=start_hook();$RUN{next_http_retry}=time+5 unless$ok;$ok;
+}
+
+sub webhook_test_server_cli {
+ my($requests)=@_;$requests=int($requests||0);
+ if($requests<1||$requests>100){print STDERR "usage: ".APP_NAME." --webhook-test-server REQUESTS\n";return 64}
+ if(env_text('IRC_GITWATCH_TEST_MODE','')ne'1'){print STDERR "webhook test server is available only in explicit test mode\n";return 64}
+ if($CFG{hook_secret}eq''){print STDERR "webhook test server requires GITHUB_WEBHOOK_SECRET\n";return 64}
+ $CFG{hook_bind}='127.0.0.1';$CFG{hook_port}=0;$CFG{hook_root_alias}=0;
+ load_state();return 2 unless start_hook(1);
+ $CFG{hook_port}=$RUN{listener}->sockport;
+ print "READY $CFG{hook_port}\n";STDOUT->flush;
+ for(1..$requests){
+  my$c=$RUN{listener}->accept();return 2 unless$c;
+  $c->autoflush(1);my$ok=eval{handle_hook($c);1};
+  eval{http_reply($c,500,'internal error')}unless$ok;close$c;
+ }
+ close$RUN{listener};$RUN{listener}=undef;0;
 }
 
 # ── Reconciliation / lifecycle ───────────────────────────────────────────────
@@ -4298,6 +4324,153 @@ sub state_fixture_check_cli {
  print 'failed checks: '.join(',',map{$checks[$_][0]}@bad)."\n"if$bad;
  $bad?1:0;
 }
+sub reconciliation_test_fixture_cli {
+ my($path,$mode)=@_;
+ if(env_text('IRC_GITWATCH_TEST_MODE','')ne'1'){
+  print STDERR "reconciliation fixture runner is available only in explicit test mode\n";
+  return 64;
+ }
+ if(!defined$path||$path eq''||!defined$mode||$mode!~/^(?:baseline|incremental)$/){
+  print STDERR "usage: ".APP_NAME." --reconciliation-test-fixture FILE baseline|incremental\n";
+  return 64;
+ }
+ open my$fh,'<:raw',$path or do{print STDERR "cannot read $path: $!\n";return 66};
+ local$/;my$raw=<$fh>;close$fh;
+ my$events=eval{decode_json($raw)};
+ if(!$events||ref($events)ne'ARRAY'){
+  print STDERR "reconciliation fixture must contain a JSON array\n";
+  return 65;
+ }
+ load_state();
+ my$fresh=$mode eq'baseline'?1:0;
+ my$ok=eval{process_events_batch(\$fresh,$events);1};
+ if(!$ok){print STDERR clean($@||'reconciliation fixture failed')."\n";return 1}
+
+ my@pending_sources=map{clean($_->{source}||'')}@{$STATE{pending}};
+ my@pending_targets;
+ for my$item(@{$STATE{pending}}){
+  my$targets=ref($item->{targets})eq'ARRAY'?$item->{targets}:[];
+  push@pending_targets,[map{clean($_)}@$targets];
+ }
+ my@history_sources=map{clean($_->{source}||'')}@{$STATE{history}};
+ print encode_json({
+  mode=>$mode,events=>scalar(@$events),event_seen=>scalar(keys%{$STATE{event_seen}}),
+  fingerprints=>scalar(keys%{$STATE{fingerprints}}),deliveries=>scalar(keys%{$STATE{deliveries}}),
+  pending=>scalar(@{$STATE{pending}}),pending_sources=>\@pending_sources,
+  pending_targets=>\@pending_targets,history_sources=>\@history_sources,
+  broadcast_enqueued=>int($STATS{broadcast_enqueued}||0),poll_new=>int($STATS{poll_new}||0),
+  poll_sent=>int($STATS{poll_sent}||0),hook_valid=>int($STATS{hook_valid}||0),
+  hook_dupe=>int($STATS{hook_dupe}||0),
+ })."\n";
+ 0;
+}
+sub delivery_test_summary {
+ my($phase)=@_;my$item=@{$STATE{pending}}?$STATE{pending}[0]:{};
+ my$audit=@{$STATE{broadcast_history}}?$STATE{broadcast_history}[-1]:{};
+ my$at=ref($audit->{targets})eq'HASH'?$audit->{targets}:{};
+ my%sent=map{my$id=$_;($id=>int($STATE{delivery_stats}{$id}{sent}||0))}current_target_ids();
+ +{
+  phase=>$phase,pending=>scalar(@{$STATE{pending}}),history=>scalar(@{$STATE{history}}),
+  item_source=>clean($item->{source}||''),item_counted=>$item->{counted}?1:0,
+  item_targets=>ref($item->{targets})eq'ARRAY'?[map{clean($_)}@{$item->{targets}}]:[],
+  item_delivered=>ref($item->{delivered})eq'HASH'?[sort keys%{$item->{delivered}}]:[],
+  audit_status=>clean($audit->{status}||''),audit_targets=>[sort keys%$at],
+  audit_delivered=>scalar(grep{int($at->{$_}||0)>0}keys%$at),delivery_sent=>\%sent,
+  broadcast_enqueued=>int($STATS{broadcast_enqueued}||0),
+  broadcast_completed=>int($STATS{broadcast_completed}||0),
+  delivery_attempts=>int($STATS{broadcast_delivery_attempts}||0),
+  delivery_failures=>int($STATS{broadcast_delivery_failures}||0),
+  hook_sent=>int($STATS{hook_sent}||0),
+ };
+}
+sub delivery_test_step_cli {
+ my($phase,$wire_dir)=@_;
+ if(env_text('IRC_GITWATCH_TEST_MODE','')ne'1'){
+  print STDERR "delivery fixture runner is available only in explicit test mode\n";return 64;
+ }
+ if(!defined$phase||$phase!~/^(?:seed|partial|resume)$/||!defined$wire_dir||$wire_dir!~m{^/}||!-d$wire_dir){
+  print STDERR "usage: ".APP_NAME." --delivery-test-step seed|partial|resume /absolute/wire-directory\n";return 64;
+ }
+ load_state();$CFG{send_interval}=0;
+ if($phase eq'seed'){
+  if(@{$STATE{pending}}||@{$STATE{broadcast_history}}){print STDERR "delivery seed requires an empty state\n";return 65}
+  enqueue('IRC-GITWATCH-DELIVERY-RESUME','hook',1);save_state();
+  print encode_json(delivery_test_summary($phase))."\n";return 0;
+ }
+
+ my@handles;
+ for my$net(enabled_nets()){
+  $net->{up}=1;$net->{next_send}=0;$net->{send_cursor}=0;
+  $_->{joined}=1 for net_channels($net);
+  if($phase eq'partial'&&$net->{id}eq'libera'){
+   open my$fh,'<:raw','/dev/null' or do{print STDERR "cannot open failure socket: $!\n";return 66};
+   push@handles,$fh;$net->{socket}=$fh;next;
+  }
+  my$path="$wire_dir/$net->{id}.$phase.wire";
+  open my$fh,'>:raw',$path or do{print STDERR "cannot create $path: $!\n";return 66};
+  $fh->autoflush(1);push@handles,$fh;$net->{socket}=$fh;
+ }
+ if($phase eq'partial'){
+  my$under=$NET{undernet};my@channels=net_channels($under);$channels[1]{joined}=0 if@channels>1;
+  local$SIG{__WARN__}=sub{};drain_queue();
+ }else{
+  drain_queue()for 1..4;
+ }
+ save_state();
+ for my$net(enabled_nets()){$net->{socket}=undef;$net->{up}=0}
+ eval{close$_}for@handles;
+ print encode_json(delivery_test_summary($phase))."\n";0;
+}
+sub state_recovery_test_summary {
+ my($phase,$loaded_from,$save_ok)=@_;my$item=@{$STATE{pending}}?$STATE{pending}[0]:{};
+ my$audit=@{$STATE{broadcast_history}}?$STATE{broadcast_history}[-1]:{};
+ my$targets=ref($item->{targets})eq'ARRAY'?$item->{targets}:[];
+ my$delivered=ref($item->{delivered})eq'HASH'?$item->{delivered}:{};
+ my$at=ref($audit->{targets})eq'HASH'?$audit->{targets}:{};my$ss=state_status();
+ my@pm=stat($CFG{state_file});my@bm=stat(state_backup_path());
+ +{
+  phase=>$phase,loaded_from=>clean($loaded_from||$RUN{state_loaded_from}||'none'),save_ok=>$save_ok?1:0,
+  pending=>scalar(@{$STATE{pending}}),history=>scalar(@{$STATE{history}}),item_source=>clean($item->{source}||''),
+  item_counted=>$item->{counted}?1:0,item_targets=>[map{clean($_)}@$targets],item_delivered=>[sort keys%$delivered],
+  audit_status=>clean($audit->{status}||''),audit_delivered=>scalar(grep{int($at->{$_}||0)>0}keys%$at),
+  event_seen=>exists($STATE{event_seen}{'state-recovery-event'})?1:0,
+  delivery_seen=>exists($STATE{deliveries}{'state-recovery-delivery'})?1:0,
+  fingerprint_seen=>exists($STATE{fingerprints}{'state-recovery-fingerprint'})?1:0,
+  history_marker=>scalar(grep{plain_irc($_->{text}||'')eq'IRC-GITWATCH-STATE-RECOVERY'}@{$STATE{history}}),
+  hook_sent=>int($STATS{hook_sent}||0),broadcast_enqueued=>int($STATS{broadcast_enqueued}||0),
+  state_recoveries=>int($STATS{state_recoveries}||0),state_backups=>int($STATS{state_backups}||0),
+  primary=>$ss->{primary},backup=>$ss->{backup},primary_version=>int($ss->{primary_version}||0),backup_version=>int($ss->{backup_version}||0),
+  primary_mode=>@pm?sprintf('%04o',$pm[2]&07777):'',backup_mode=>@bm?sprintf('%04o',$bm[2]&07777):'',
+ };
+}
+sub state_recovery_test_step_cli {
+ my($phase)=@_;
+ if(env_text('IRC_GITWATCH_TEST_MODE','')ne'1'){
+  print STDERR "state recovery runner is available only in explicit test mode\n";return 64;
+ }
+ if(!defined$phase||$phase!~/^(?:seed|recover)$/){
+  print STDERR "usage: ".APP_NAME." --state-recovery-test-step seed|recover\n";return 64;
+ }
+ load_state();
+ if($phase eq'seed'){
+  if(-e$CFG{state_file}||-e state_backup_path()||@{$STATE{pending}}){
+   print STDERR "state recovery seed requires empty primary and backup paths\n";return 65;
+  }
+  enqueue('IRC-GITWATCH-STATE-RECOVERY','hook',1);
+  my$item=$STATE{pending}[0];my@targets=item_target_ids($item);my$at=int(time);
+  if(@targets!=4){print STDERR "state recovery seed requires exactly four enabled IRC targets\n";return 65}
+  for my$tid(@targets[0,1]){$item->{delivered}{$tid}=$at;note_broadcast_delivery($item,$tid,$at)}
+  mark_source_sent($item);
+  $STATE{event_seen}{'state-recovery-event'}=$at;
+  $STATE{deliveries}{'state-recovery-delivery'}=$at;
+  $STATE{fingerprints}{'state-recovery-fingerprint'}=$at;
+  return 1 unless save_state();return 1 unless save_state();
+  print encode_json(state_recovery_test_summary($phase,$RUN{state_loaded_from},1))."\n";return 0;
+ }
+ my$loaded_from=$RUN{state_loaded_from};my$before=state_recovery_test_summary('before-repair',$loaded_from,0);
+ my$save_ok=save_state();my$after=state_recovery_test_summary('after-repair',$loaded_from,$save_ok);
+ print encode_json({phase=>$phase,before=>$before,after=>$after})."\n";$save_ok?0:1;
+}
 sub doctor_line {
  my($kind,$name,$detail)=@_;$detail//=q{};
  print sprintf("%-5s %-18s %s\n","[$kind]",$name,$detail);
@@ -4436,6 +4609,10 @@ if(@ARGV){
  if($ARGV[0]eq'--selftest-list'){my@names=active_selftest_names();printf "%03d %s\n",$_+1,$names[$_]for 0..$#names;exit 0}
  if($ARGV[0]eq'--selftest'){exit selftest()}
  if($ARGV[0]eq'--state-fixture-check'){exit state_fixture_check_cli($ARGV[1],$ARGV[2])}
+ if($ARGV[0]eq'--reconciliation-test-fixture'){exit reconciliation_test_fixture_cli($ARGV[1],$ARGV[2])}
+ if($ARGV[0]eq'--delivery-test-step'){exit delivery_test_step_cli($ARGV[1],$ARGV[2])}
+ if($ARGV[0]eq'--state-recovery-test-step'){exit state_recovery_test_step_cli($ARGV[1])}
+ if($ARGV[0]eq'--webhook-test-server'){exit webhook_test_server_cli($ARGV[1])}
  if($ARGV[0]eq'--config-check'){summary();exit config_check()}
  if($ARGV[0]eq'--doctor'){exit doctor()}
  if($ARGV[0]eq'--http-check'){exit http_check_cli()}

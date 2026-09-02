@@ -1,0 +1,28 @@
+{
+  "action": "completed",
+  "repository": {
+    "id": 1296269,
+    "full_name": "octocat/Hello-World"
+  },
+  "sender": {
+    "login": "github-actions"
+  },
+  "workflow": {
+    "id": 5001
+  },
+  "workflow_run": {
+    "id": 5002,
+    "workflow_id": 5001,
+    "run_attempt": 1,
+    "name": "Synthetic CI",
+    "display_title": "Synthetic failure",
+    "head_branch": "main",
+    "head_sha": "2222222222222222222222222222222222222222",
+    "status": "completed",
+    "conclusion": "failure",
+    "event": "push",
+    "run_started_at": "2026-08-31T12:00:00Z",
+    "updated_at": "2026-08-31T12:02:00Z",
+    "html_url": "https://github.com/octocat/Hello-World/actions/runs/5002"
+  }
+}

@@ -21,7 +21,7 @@ Verify the source before installing:
 make check
 ```
 
-That command runs the full public release gate. During development, `make test-targeted` and `make test-fast` provide shorter feedback loops; see the main README for the exact coverage of each profile.
+That command runs the full public release gate. During development, `make test-targeted` and `make test-fast` provide shorter feedback loops; see the main README for the exact coverage of each profile. The targeted profile uses only synthetic local fixtures while proving webhook admission, reconciliation, persistent IRC fan-out and state recovery across process restarts.
 
 ## Automated systemd installation
 
@@ -101,11 +101,11 @@ Useful one-shot checks are listed in the main README. `--doctor` performs networ
 ## Migrating or upgrading an existing GitHubWatch v0.29 instance
 
 1. Stop the old service cleanly so its latest state is saved.
-2. Back up its state and environment files.
+2. Run `--state-check`, then back up the primary state, its validated `.bak` copy when present, and the environment file.
 3. Install IRC GitWatch without starting it.
 4. Set `GITHUB_REPO`, `GITHUB_ACCOUNT` and `GITHUB_STATE_FILE` explicitly.
 5. Copy the state file to `/var/lib/irc-gitwatch/state.json`, owner `irc-gitwatch`, mode `0600`.
-6. Run `--state-check`, `--config-check` and `--selftest`.
+6. Run `--state-check`, `--config-check`, `--selftest` and the packaged validation gate before starting the service.
 7. Start only the new service.
 
 Do not run two instances against the same state file or IRC targets. Version 0.30 retains the v0.29 state schema and metrics prefix specifically to make this migration uneventful. Its additive CI reliability history starts filling on the first successful Actions scan; no manual state migration is needed.

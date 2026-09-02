@@ -11,6 +11,10 @@ All notable changes are documented here. The project follows semantic intent whi
 - Synthetic v0.29 and v0.30 persistent-state fixtures with 28 compatibility assertions.
 - Public CI coverage for Ubuntu 24.04, Debian 12 and Debian 13.
 - CI contract validation for platform coverage, immutable action references and disabled checkout credential persistence.
+- Signed webhook HTTP black-box coverage for valid, malformed, private, unsupported, missing-scope and wrong-repository deliveries (31 assertions).
+- Webhook/polling reconciliation fixtures proving overlap suppression and catch-up of genuinely new events across process restarts (30 assertions).
+- Persistent four-target IRC fan-out coverage proving partial write failure, exact missing-target resume and duplicate-free second restart (24 assertions).
+- Persistent-state disaster-recovery coverage for corrupt and missing primary files, validated backup preservation, atomic mode-0600 repair and retained queue acknowledgements (25 assertions).
 
 ### Security
 
@@ -24,6 +28,7 @@ All notable changes are documented here. The project follows semantic intent whi
 
 - No state schema, environment variable, route, IRC command, JSON field or Prometheus metric changed.
 - The v0.29 and v0.30 fixture contracts now make that promise executable in local and public CI.
+- All new scenario entry points are test-only, require explicit `IRC_GITWATCH_TEST_MODE=1`, use synthetic local files and perform no GitHub or IRC network operation.
 
 ## 0.30 — 2026-08-30
 

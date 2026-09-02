@@ -21,6 +21,15 @@ make check
 
 When state handling changes, update or add a synthetic fixture under `t/fixtures/` and keep older fixtures passing. Never derive a public fixture by redacting a production state file: build the smallest synthetic document that proves the contract instead.
 
+Changes at an acquisition or delivery boundary must also preserve the matching black-box contract:
+
+- signed HTTP admission and repository scope: `t/webhook-blackbox.pl`;
+- webhook/polling deduplication and catch-up: `t/reconciliation-blackbox.pl`;
+- persistent per-target IRC fan-out and restart resume: `t/delivery-blackbox.pl`;
+- primary/backup state repair after a process restart: `t/state-recovery-blackbox.pl`.
+
+Test-only command paths must remain guarded by `IRC_GITWATCH_TEST_MODE=1`, operate only on caller-supplied synthetic local state, and never contact GitHub or IRC.
+
 Do not use real tokens, passwords, webhook payloads containing private data or production state files in tests. Fixtures should use public or synthetic identities.
 
 ## Compatibility

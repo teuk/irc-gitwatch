@@ -1,0 +1,20 @@
+[
+  {
+    "id": "event-push-1111",
+    "type": "PushEvent",
+    "actor": {"login": "octocat"},
+    "repo": {"name": "octocat/Hello-World"},
+    "payload": {
+      "ref": "refs/heads/main",
+      "head": "1111111111111111111111111111111111111111",
+      "size": 1,
+      "distinct_size": 1,
+      "commits": [
+        {
+          "sha": "1111111111111111111111111111111111111111",
+          "message": "Synthetic black-box push"
+        }
+      ]
+    }
+  }
+]

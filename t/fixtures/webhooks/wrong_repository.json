@@ -1,0 +1,16 @@
+{
+  "action": "opened",
+  "repository": {
+    "id": 9999999,
+    "full_name": "example/not-the-configured-repository"
+  },
+  "sender": {
+    "login": "example-user"
+  },
+  "issue": {
+    "id": 6001,
+    "number": 1,
+    "title": "Wrong repository",
+    "updated_at": "2026-08-31T12:03:00Z"
+  }
+}

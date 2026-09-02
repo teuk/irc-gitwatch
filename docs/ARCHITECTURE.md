@@ -17,6 +17,8 @@ flowchart TD
 
 Signed webhooks provide low latency. Repository event polling provides reconciliation when delivery is delayed or missing. Both paths normalize into the same event model and fingerprint space.
 
+The reconciliation contract is restart-safe: webhook and polling observations of the same push converge on one fingerprint and one announcement, while a genuinely new polling event remains eligible. Public fixtures exercise both the overlap and catch-up paths without a GitHub connection.
+
 GitHub Actions, repository traffic, public account inventory and RSS each have independent adaptive schedules. Exactly one maintenance family advances per event-loop turn so an optional slow source does not monopolize local HTTP or IRC work.
 
 Completed Actions runs are normalized into a separate bounded history (30 days, at most 500 runs) during the existing Actions scan. Reliability and incident summaries are computed from that local state, so dashboard, IRC, JSON and Prometheus consumers do not create additional GitHub traffic.
@@ -24,6 +26,8 @@ Completed Actions runs are normalized into a separate bounded history (30 days, 
 ## Delivery invariant
 
 One normalized announcement becomes one queue record with an explicit target set. Every network/channel acknowledges delivery independently. A record leaves the queue only after every target has succeeded; partial progress survives state saves and restarts.
+
+The delivery black box forces one IRC write failure and one unavailable channel, restarts the Perl process, then verifies that only the two missing targets are served. A second restart must emit nothing. Wire captures, queue audit and per-target counters must agree exactly.
 
 The queue is bounded. When space is exhausted, eviction and partial-delivery loss are separately counted and surfaced rather than hidden.
 
@@ -35,6 +39,8 @@ The queue is bounded. When space is exhausted, eviction and partial-delivery los
 - Optional validated `.bak` recovery copy.
 - Bounded histories, IDs, fingerprints, delivery audits, CI runs and account changes.
 - Legacy activity text is repaired at display/serialization boundaries without rewriting unrelated strings.
+
+Before replacing the primary file, backup rotation parses and validates the current primary. Invalid bytes are never promoted into `.bak`. If the primary is corrupt or missing, startup may load the validated backup; the next save atomically rebuilds the primary while retaining pending fan-out, acknowledgements, fingerprints, history and counters. The disaster-recovery black box proves both incidents in separate Perl processes and checks mode `0600` after repair.
 
 ## Scope and privacy invariant
 
@@ -68,10 +74,10 @@ Every change to one of these surfaces needs a deterministic regression check and
 
 Validation is layered so development feedback stays quick without weakening the release gate:
 
-- `targeted` checks TLS availability, Perl syntax, the named built-in registry and both retained state contracts;
+- `targeted` checks TLS availability, Perl syntax, the named built-in registry, both retained state contracts, signed webhook admission, webhook/polling reconciliation, persistent IRC fan-out and state disaster recovery;
 - `fast` adds unrelated-account configurations, the public CI contract and dashboard JavaScript syntax;
 - `full` adds credential discovery, the exact public-tree contract and Git repository hygiene.
 
-The v0.29 and v0.30 fixtures are intentionally small synthetic documents. They exercise scalar and structured pending delivery, retained CI history, unknown additive fields and normalization bounds without containing a production token, channel or state dump.
+The v0.29 and v0.30 fixtures are intentionally small synthetic documents. Scenario fixtures and wire files use public or invented identities. Together they exercise scalar and structured pending delivery, retained CI history, unknown additive fields, HTTP rejection paths, deduplication, fan-out resume and backup repair without containing a production token, channel or state dump or opening an external connection.
 
 Public CI executes the full profile on Ubuntu 24.04 and in Debian 12/13 job containers. Every reusable GitHub Action is referenced by a full commit SHA, and checkout credentials are removed before the test steps run.

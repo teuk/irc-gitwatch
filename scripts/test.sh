@@ -33,9 +33,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$profile" in
-  targeted) total=5 ;;
-  fast) total=9 ;;
-  full) total=12 ;;
+  targeted) total=9 ;;
+  fast) total=13 ;;
+  full) total=16 ;;
   *)
     echo "Unknown test profile: $profile" >&2
     exit 64
@@ -127,6 +127,22 @@ check_state_v029() {
 check_state_v030() {
   "$perl_bin" irc-gitwatch.pl \
     --state-fixture-check t/fixtures/state-v0.30.json v0.30
+}
+
+check_webhook_blackbox() {
+  "$perl_bin" t/webhook-blackbox.pl
+}
+
+check_reconciliation_blackbox() {
+  "$perl_bin" t/reconciliation-blackbox.pl
+}
+
+check_delivery_blackbox() {
+  "$perl_bin" t/delivery-blackbox.pl
+}
+
+check_state_recovery_blackbox() {
+  "$perl_bin" t/state-recovery-blackbox.pl
 }
 
 check_dashboard_javascript() {
@@ -223,6 +239,25 @@ check_public_tree() {
     t/fixtures/README.md \
     t/fixtures/state-v0.29.json \
     t/fixtures/state-v0.30.json \
+    t/fixtures/webhooks/README.md \
+    t/fixtures/webhooks/issues.json \
+    t/fixtures/webhooks/missing_repository.json \
+    t/fixtures/webhooks/ping.json \
+    t/fixtures/webhooks/private_event.json \
+    t/fixtures/webhooks/pull_request.json \
+    t/fixtures/webhooks/push.json \
+    t/fixtures/webhooks/release.json \
+    t/fixtures/webhooks/unknown_event.json \
+    t/fixtures/webhooks/workflow_run.json \
+    t/fixtures/webhooks/wrong_repository.json \
+    t/fixtures/reconciliation/README.md \
+    t/fixtures/reconciliation/baseline.json \
+    t/fixtures/reconciliation/new_push.json \
+    t/fixtures/reconciliation/overlap.json \
+    t/delivery-blackbox.pl \
+    t/reconciliation-blackbox.pl \
+    t/state-recovery-blackbox.pl \
+    t/webhook-blackbox.pl \
     systemd/irc-gitwatch.service
   do
     [ -f "$path" ] || {
@@ -234,7 +269,11 @@ check_public_tree() {
   [ -x irc-gitwatch.pl ] &&
   [ -x scripts/check.sh ] &&
   [ -x scripts/install.sh ] &&
-  [ -x scripts/test.sh ]
+  [ -x scripts/test.sh ] &&
+  [ -x t/delivery-blackbox.pl ] &&
+  [ -x t/reconciliation-blackbox.pl ] &&
+  [ -x t/state-recovery-blackbox.pl ] &&
+  [ -x t/webhook-blackbox.pl ]
 }
 
 check_repository_hygiene() {
@@ -262,6 +301,10 @@ run_case 'Perl syntax' check_syntax
 run_case 'named deterministic selftest' selftest_default
 run_case 'v0.29 persistent-state compatibility' check_state_v029
 run_case 'v0.30 persistent-state compatibility' check_state_v030
+run_case 'signed webhook HTTP black-box' check_webhook_blackbox
+run_case 'webhook and polling reconciliation black-box' check_reconciliation_blackbox
+run_case 'persistent IRC fan-out delivery black-box' check_delivery_blackbox
+run_case 'persistent state disaster recovery black-box' check_state_recovery_blackbox
 
 if [ "$profile" = fast ] || [ "$profile" = full ]; then
   run_case 'public-account configuration selftest' selftest_public_account

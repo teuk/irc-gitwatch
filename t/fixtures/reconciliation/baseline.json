@@ -1,0 +1,36 @@
+[
+  {
+    "id": "baseline-issue-9001",
+    "type": "IssuesEvent",
+    "actor": {"login": "hubot"},
+    "repo": {"name": "octocat/Hello-World"},
+    "payload": {
+      "action": "opened",
+      "issue": {
+        "id": 9001,
+        "number": 90,
+        "title": "Synthetic startup baseline",
+        "updated_at": "2026-08-31T10:00:00Z",
+        "html_url": "https://github.com/octocat/Hello-World/issues/90"
+      }
+    }
+  },
+  {
+    "id": "baseline-push-7777",
+    "type": "PushEvent",
+    "actor": {"login": "octocat"},
+    "repo": {"name": "octocat/Hello-World"},
+    "payload": {
+      "ref": "refs/heads/baseline-only",
+      "head": "7777777777777777777777777777777777777777",
+      "size": 1,
+      "distinct_size": 1,
+      "commits": [
+        {
+          "sha": "7777777777777777777777777777777777777777",
+          "message": "Synthetic startup baseline"
+        }
+      ]
+    }
+  }
+]

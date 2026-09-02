@@ -1,0 +1,51 @@
+[
+  {
+    "id": "event-release-4001",
+    "type": "ReleaseEvent",
+    "actor": {"login": "octocat"},
+    "repo": {"name": "octocat/Hello-World"},
+    "payload": {
+      "action": "published",
+      "release": {
+        "id": 4001,
+        "tag_name": "v9.9.9-test",
+        "name": "Synthetic release",
+        "html_url": "https://github.com/octocat/Hello-World/releases/tag/v9.9.9-test"
+      }
+    }
+  },
+  {
+    "id": "event-issue-2001",
+    "type": "IssuesEvent",
+    "actor": {"login": "hubot"},
+    "repo": {"name": "octocat/Hello-World"},
+    "payload": {
+      "action": "opened",
+      "issue": {
+        "id": 2001,
+        "number": 17,
+        "title": "Synthetic issue",
+        "updated_at": "2026-08-31T12:00:00Z",
+        "html_url": "https://github.com/octocat/Hello-World/issues/17"
+      }
+    }
+  },
+  {
+    "id": "event-push-1111",
+    "type": "PushEvent",
+    "actor": {"login": "octocat"},
+    "repo": {"name": "octocat/Hello-World"},
+    "payload": {
+      "ref": "refs/heads/main",
+      "head": "1111111111111111111111111111111111111111",
+      "size": 1,
+      "distinct_size": 1,
+      "commits": [
+        {
+          "sha": "1111111111111111111111111111111111111111",
+          "message": "Synthetic black-box push"
+        }
+      ]
+    }
+  }
+]

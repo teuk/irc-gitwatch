@@ -1,0 +1,18 @@
+{
+  "action": "opened",
+  "number": 18,
+  "repository": {
+    "id": 1296269,
+    "full_name": "octocat/Hello-World"
+  },
+  "sender": {
+    "login": "hubot"
+  },
+  "pull_request": {
+    "id": 3001,
+    "number": 18,
+    "title": "Synthetic pull request",
+    "updated_at": "2026-08-31T12:01:00Z",
+    "html_url": "https://github.com/octocat/Hello-World/pull/18"
+  }
+}
