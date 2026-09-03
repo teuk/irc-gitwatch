@@ -38,11 +38,17 @@ The configured webhook path defaults to `/githubhook`. With `GITHUB_WEBHOOK_ROOT
 
 ## Response stability
 
-Fields remain additive in 0.30. Consumers should ignore unknown JSON keys. Existing field removal or semantic changes require a changelog entry and migration note.
+Fields remain additive in 0.31. Consumers should ignore unknown JSON keys. Existing field removal or semantic changes require a changelog entry and migration note.
 
 `ci_reliability` is additive in dashboard/status JSON. The dedicated CI payload reports retention bounds, coverage, outcomes, pass rate, incidents, recovery time, duration percentiles, green streak and a short recent-run list. Empty history returns a `waiting` state rather than inventing a reliability result.
 
 Prometheus metrics retain the historical `githubwatch_` prefix. Labels include configured repository/account and IRC target metadata but never credentials.
+
+## IRC delivery truth
+
+`status.json` and the dashboard payload expose each configured `irc.targets[]` entry with `awaiting`, `delivery_error`, `delivery_retry_at` and `plain_only`. The IRC object also includes the effective `required_targets` contract.
+
+The broadcast payload exposes the same state per target; its retry timestamp is named `retry_at`. `awaiting: 1` means bytes were written but are still inside the short IRC rejection window, not that delivery has already been acknowledged. A numeric 404/442 clears that pending acknowledgement, retains the queue record and records the error. A formatted rejection is retried once as plain UTF-8 for that channel only.
 
 ## Health semantics
 

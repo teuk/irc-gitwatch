@@ -2,7 +2,7 @@
 
 All notable changes are documented here. The project follows semantic intent while the original production version number is retained for the first public release.
 
-## Unreleased
+## 0.31 — 2026-09-02
 
 ### Added
 
@@ -13,8 +13,11 @@ All notable changes are documented here. The project follows semantic intent whi
 - CI contract validation for platform coverage, immutable action references and disabled checkout credential persistence.
 - Signed webhook HTTP black-box coverage for valid, malformed, private, unsupported, missing-scope and wrong-repository deliveries (31 assertions).
 - Webhook/polling reconciliation fixtures proving overlap suppression and catch-up of genuinely new events across process restarts (30 assertions).
-- Persistent four-target IRC fan-out coverage proving partial write failure, exact missing-target resume and duplicate-free second restart (24 assertions).
+- Persistent multi-target IRC fan-out coverage proving delayed acknowledgement, partial write failure, IRC rejection truth, exact missing-target resume, formatted-to-plain fallback, optional-target retirement and duplicate-free restart (57 assertions).
 - Persistent-state disaster-recovery coverage for corrupt and missing primary files, validated backup preservation, atomic mode-0600 repair and retained queue acknowledgements (25 assertions).
+- Optional `UNDERNET_CHANNEL_SECONDARY`; an explicit empty value disables the secondary target while preserving the channel-qualified primary delivery identity.
+- `IRC_REQUIRED_TARGETS`, `IRC_DELIVERY_SETTLE_MS` and `IRC_DELIVERY_RETRY_SECONDS` operational contracts.
+- Additive per-target delivery error, retry, pending-acknowledgement and learned plain-text fields in status, dashboard and broadcast JSON.
 
 ### Security
 
@@ -23,10 +26,13 @@ All notable changes are documented here. The project follows semantic intent whi
 ### Fixed
 
 - Avoid an uninitialized-value warning when loading a legacy scalar pending-delivery entry without an explicit id; generated identifiers and runtime behavior are unchanged.
+- Do not count a successful socket write as delivered until the IRC rejection window has elapsed.
+- Observe IRC numerics 404/442, retain rejected queue items and retry a formatted rejection once as plain UTF-8 text without affecting other targets.
+- Complete a persisted four-target queue record when an intentionally retired optional target was its only missing acknowledgement; no successful target is replayed.
 
 ### Compatibility
 
-- No state schema, environment variable, route, IRC command, JSON field or Prometheus metric changed.
+- State schema 11, existing environment variables, routes, IRC commands and Prometheus metrics remain compatible; new configuration and JSON fields are additive.
 - The v0.29 and v0.30 fixture contracts now make that promise executable in local and public CI.
 - All new scenario entry points are test-only, require explicit `IRC_GITWATCH_TEST_MODE=1`, use synthetic local files and perform no GitHub or IRC network operation.
 

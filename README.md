@@ -6,7 +6,7 @@
 
 IRC GitWatch is a single-process Perl daemon that turns GitHub activity into reliable IRC notifications and a live operational dashboard. It combines signed webhooks with polling reconciliation, watches GitHub Actions, preserves a per-target delivery queue, and exposes traffic and public-account analytics without pretending GitHub's aggregate “unique” figures are raw IP counts.
 
-The project began as the production bot behind `teuk/mediabot_v3`. Release 0.30 keeps that battle-tested core, adds CI reliability intelligence, and remains configurable for any public repository, owner account and IRC target set.
+The project began as the production bot behind `teuk/mediabot_v3`. Release 0.31 keeps that battle-tested core, adds executable delivery truth and target-set migration, and remains configurable for any public repository, owner account and IRC target set.
 
 ## Why it is different
 
@@ -14,7 +14,7 @@ The project began as the production bot behind `teuk/mediabot_v3`. Release 0.30 
 - Polling reconciliation for events a webhook may miss, with ETags, pagination and rate-limit backoff.
 - GitHub Actions failure, recovery, slow-run, missing-run and flaky-run detection.
 - Bounded 30-day CI reliability analytics: pass rate, active/resolved incidents, MTTR, p50/p95 runtime and current green streak, derived from the existing Actions feed without extra API calls.
-- Persistent fan-out delivery: each IRC network/channel is audited independently.
+- Persistent fan-out delivery: each IRC network/channel is acknowledged independently after a short rejection window, with durable retry and honest IRC numeric errors.
 - GitHub Traffic dashboard with clones, views, unique cloners, unique visitors, trends and retained daily history.
 - Public owner portfolio: activity, stars, forks, hygiene, stale projects and change history for one configurable GitHub account.
 - Read-only JSON, health and Prometheus endpoints.
@@ -154,11 +154,11 @@ make test-full      # fast plus credentials, public-tree and repository-hygiene 
 make check          # alias for the full release gate
 ```
 
-All profiles display progress and stop on the first failing named check. The targeted profile proves signed HTTP admission, webhook/polling overlap, partial four-target IRC delivery across process restarts, and recovery from a corrupt or missing primary state. Its fixtures are deliberately credential-free and synthetic: no test opens an IRC or GitHub connection, and no production state is copied. Public CI runs the full gate independently on Ubuntu 24.04, Debian 12 and Debian 13.
+All profiles display progress and stop on the first failing named check. The targeted profile proves signed HTTP admission, webhook/polling overlap, partial multi-target IRC delivery across process restarts, formatted-to-plain fallback, optional-target retirement without replay, and recovery from a corrupt or missing primary state. Its fixtures are deliberately credential-free and synthetic: no test opens an IRC or GitHub connection, and no production state is copied. Public CI runs the full gate independently on Ubuntu 24.04, Debian 12 and Debian 13.
 
 ## Compatibility contract
 
-Release 0.30 retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and every existing IRC command. Its new CI history is an optional additive state field, so an existing v0.29 state can be reused directly; reliability coverage fills from the first successful Actions scan.
+Release 0.31 retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and every existing IRC command. Existing v0.29/v0.30 state can be reused directly. When an optional IRC target is intentionally removed, pending records are reconciled against the active target contract without replaying targets that already acknowledged the event.
 
 Run `make check` before every upgrade. The suite exercises project defaults and unrelated public-account configurations to guard against accidental `teuk` coupling. Versioned fixtures prove that v0.29 and v0.30 state remain loadable; black-box restart tests prove that reconciliation, per-target acknowledgements and validated backup recovery remain durable without changing the schema.
 

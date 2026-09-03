@@ -20,7 +20,7 @@ binmode STDOUT, ':encoding(UTF-8)' or die "STDOUT UTF-8: $!";
 binmode STDERR, ':encoding(UTF-8)' or die "STDERR UTF-8: $!";
 $SIG{PIPE}='IGNORE'; # A proxy/client disconnect must never kill the daemon.
 
-use constant VERSION          => '0.30';
+use constant VERSION          => '0.31';
 use constant APP_NAME         => 'IRC GitWatch';
 use constant API_VERSION      => '2026-03-10';
 use constant MAX_IRC_BYTES    => 370;
@@ -66,6 +66,9 @@ my %CFG=(
  irc_colors        => env_bool('IRC_COLORS',1),
  startup_announce  => env_bool('IRC_STARTUP_ANNOUNCE',1),
  send_interval     => env_int('IRC_SEND_INTERVAL_MS',800,250,5000)/1000,
+ delivery_settle   => env_int('IRC_DELIVERY_SETTLE_MS',1200,250,5000)/1000,
+ delivery_retry    => env_int('IRC_DELIVERY_RETRY_SECONDS',60,5,3600),
+ required_targets  => env_text('IRC_REQUIRED_TARGETS',''),
  icon_mode         => lc(env_text('IRC_ICON_MODE','compat')),
 
  rss_enabled       => env_bool('RSS_ENABLED',0),
@@ -173,23 +176,26 @@ sub config_errors {
  push @e,'LIBERA_NICK must not contain whitespace' if $CFG{libera_enabled} && $CFG{libera_nick}=~/\s/;
  push @e,'LIBERA_SASL_ACCOUNT and LIBERA_SASL_PASSWORD must be set together' if $CFG{libera_enabled} && (($CFG{libera_sasl_account}eq'') != ($CFG{libera_sasl_password}eq''));
  push @e,'UNDERNET_CHANNEL_PRIMARY must start with #' if $CFG{undernet_enabled} && $CFG{undernet_teuk}!~/^#/;
- push @e,'UNDERNET_CHANNEL_SECONDARY must start with #' if $CFG{undernet_enabled} && $CFG{undernet_miaw}!~/^#/;
- push @e,'UNDERNET channels must be different' if $CFG{undernet_enabled} && lc($CFG{undernet_teuk}) eq lc($CFG{undernet_miaw});
+ push @e,'UNDERNET_CHANNEL_SECONDARY must be empty or start with #' if $CFG{undernet_enabled} && $CFG{undernet_miaw}ne''&&$CFG{undernet_miaw}!~/^#/;
+ push @e,'UNDERNET channels must be different' if $CFG{undernet_enabled} && $CFG{undernet_miaw}ne''&&lc($CFG{undernet_teuk}) eq lc($CFG{undernet_miaw});
  push @e,'UNDERNET_NICK must not contain whitespace' if $CFG{undernet_enabled} && $CFG{undernet_nick}=~/\s/;
  push @e,'UNDERNET_CHANNEL_PRIMARY_KEY must not contain whitespace' if $CFG{undernet_enabled} && $CFG{undernet_teuk_key}=~/\s/;
+ for my$id(missing_required_targets()){
+  push@e,"IRC_REQUIRED_TARGETS requires missing target $id" unless target_by_id($id);
+ }
  @e;
 }
 sub config_check { my @e=config_errors(); logmsg('ERROR',$_) for @e; logmsg('INFO','Configuration check: OK') unless @e; @e?1:0 }
 
 # ── Process state ─────────────────────────────────────────────────────────────
-my %STATS=map {($_=>0)} qw(hook_received hook_valid hook_sent hook_dupe hook_invalid hook_suppressed hook_bad_signature hook_bad_content_type hook_missing_headers hook_bad_json hook_wrong_repo hook_read_rejected hook_disabled_requests http_requests http_bad_requests http_chunked_requests http_expect_continue hook_root_alias_hits dashboard_api_requests dashboard_api_errors poll_runs poll_pages poll_gap poll_new poll_sent poll_not_modified poll_errors actions_polls actions_pages actions_gap actions_new actions_sent actions_not_modified actions_errors actions_failures actions_success actions_recoveries actions_enriched actions_enrich_skipped actions_slow_alerts actions_missing_alerts actions_expect_cleared actions_flaky_alerts traffic_cycles traffic_requests traffic_errors traffic_forbidden account_polls account_pages account_not_modified account_errors account_repos_seen account_changes_detected broadcast_enqueued broadcast_completed broadcast_delivery_attempts broadcast_delivery_failures queue_dropped queue_partial_dropped rate_limit_hits irc_epiknet_sent irc_libera_sent irc_undernet_sent irc_undernet_teuk_sent irc_undernet_miaw_sent irc_epiknet_reconnects irc_libera_reconnects irc_undernet_reconnects irc_heartbeat_pings irc_heartbeat_timeouts irc_join_retries irc_join_rejects http_listener_starts command_throttled state_backups state_recoveries state_save_errors ops_degraded_alerts ops_recovery_alerts rss_polls rss_new rss_sent rss_not_modified rss_unchanged rss_errors);
+my %STATS=map {($_=>0)} qw(hook_received hook_valid hook_sent hook_dupe hook_invalid hook_suppressed hook_bad_signature hook_bad_content_type hook_missing_headers hook_bad_json hook_wrong_repo hook_read_rejected hook_disabled_requests http_requests http_bad_requests http_chunked_requests http_expect_continue hook_root_alias_hits dashboard_api_requests dashboard_api_errors poll_runs poll_pages poll_gap poll_new poll_sent poll_not_modified poll_errors actions_polls actions_pages actions_gap actions_new actions_sent actions_not_modified actions_errors actions_failures actions_success actions_recoveries actions_enriched actions_enrich_skipped actions_slow_alerts actions_missing_alerts actions_expect_cleared actions_flaky_alerts traffic_cycles traffic_requests traffic_errors traffic_forbidden account_polls account_pages account_not_modified account_errors account_repos_seen account_changes_detected broadcast_enqueued broadcast_completed broadcast_delivery_attempts broadcast_delivery_failures irc_delivery_rejected queue_dropped queue_partial_dropped rate_limit_hits irc_epiknet_sent irc_libera_sent irc_undernet_sent irc_undernet_teuk_sent irc_undernet_miaw_sent irc_epiknet_reconnects irc_libera_reconnects irc_undernet_reconnects irc_heartbeat_pings irc_heartbeat_timeouts irc_join_retries irc_join_rejects http_listener_starts command_throttled state_backups state_recoveries state_save_errors ops_degraded_alerts ops_recovery_alerts rss_polls rss_new rss_sent rss_not_modified rss_unchanged rss_errors);
 my %STATE=(etag=>'',event_seen=>{},deliveries=>{},fingerprints=>{},pending=>[],history=>[],broadcast_seq=>0,broadcast_history=>[],delivery_stats=>{},last_hook_ok=>0,last_hook_event=>'',last_hook_reject_reason=>'',last_hook_reject_at=>0,last_event_text=>'',last_event_source=>'',last_event_at=>0,actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],ci_run_history=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0,account_etag=>'',account_repos=>[],account_history=>{},account_changes=>[],last_account_ok=>0,rss_seen=>{},rss_etag=>'',rss_modified=>'',last_rss_ok=>0,last_rss_title=>'',last_rss_link=>'',rss_id_version=>0,rss_text_version=>0,rss_digest=>'',stats_version=>0,ops_health_key=>'',ops_health_since=>0,ops_health_alerted=>0,ops_degraded_announced=>0);
 my %RUN=(
  started=>time, stopping=>0,
  listener=>undef,http_listener_error=>'',http_listener_started=>0,next_http_retry=>0,http_last_at=>0,http_last_method=>'',http_last_path=>'',http_last_status=>0,
  token=>$CFG{token}, auth_state=>$CFG{token} ne''?'unchecked':'anonymous', auth_login=>'', auth_events=>'unchecked', auth_actions=>'unchecked', auth_error=>'',
  rate_limit=>'?',rate_remaining=>'?',rate_reset=>'?',rate_block_until=>0,rate_block_reason=>'',rate_secondary_streak=>0,last_api_ok=>0,last_api_error=>'',poll_min=>60,next_poll=>time+3,events_scan=>undef,
- actions_next=>time+10,actions_fast_until=>0,actions_error=>'',actions_auth_mode=>'unchecked',actions_error_streak=>0,actions_scan=>undef,cmd_last=>{},
+ actions_next=>time+10,actions_fast_until=>0,actions_error=>'',actions_auth_mode=>'unchecked',actions_error_streak=>0,actions_scan=>undef,cmd_last=>{},delivery_receipts=>{},
  traffic_next=>time+20,traffic_stage=>0,traffic_cycle=>{},traffic_error=>'',traffic_permission=>'waiting',traffic_render_error=>'',
  account_next=>time+35,account_error=>'',account_scan=>undef,
  rss_next=>time+5,rss_error=>'',rss_failures=>0,rss_dirty=>0,maintenance_cursor=>0,state_loaded_from=>'none',state_last_saved=>0,state_last_error=>'',
@@ -200,7 +206,7 @@ my @NETS=(
  {
   id=>'epiknet',label=>'EpiKnet',enabled=>$CFG{epiknet_enabled},tls=>1,
   host=>$CFG{irc_host},port=>$CFG{irc_port},channel=>$CFG{irc_channel},
-  channels=>[{name=>$CFG{irc_channel},key=>'',label=>'primary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0}],
+  channels=>[{name=>$CFG{irc_channel},key=>'',label=>'primary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0,startup_pending_until=>0,startup_plain=>0,plain_only=>0,send_error=>'',send_retry_at=>0}],
   nick=>$CFG{irc_nick},user=>$CFG{irc_user},realname=>$CFG{irc_realname},
   sasl_account=>'',sasl_password=>'',require_sasl=>0,sasl_state=>'off',
   socket=>undef,buf=>'',up=>0,next_reconnect=>0,next_send=>0,startup_sent=>0,reconnect_delay=>10,last_rx=>0,last_join=>0,last_ping=>0,pong_deadline=>0,ping_token=>'',send_cursor=>0,
@@ -208,7 +214,7 @@ my @NETS=(
  {
   id=>'libera',label=>'Libera',enabled=>$CFG{libera_enabled},tls=>1,
   host=>$CFG{libera_host},port=>$CFG{libera_port},channel=>$CFG{libera_channel},
-  channels=>[{name=>$CFG{libera_channel},key=>'',label=>'primary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0}],
+  channels=>[{name=>$CFG{libera_channel},key=>'',label=>'primary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0,startup_pending_until=>0,startup_plain=>0,plain_only=>0,send_error=>'',send_retry_at=>0}],
   nick=>$CFG{libera_nick},user=>$CFG{libera_user},realname=>$CFG{libera_realname},
   sasl_account=>$CFG{libera_sasl_account},sasl_password=>$CFG{libera_sasl_password},require_sasl=>$CFG{libera_require_sasl},
   sasl_state=>'off',socket=>undef,buf=>'',up=>0,next_reconnect=>0,next_send=>0,startup_sent=>0,reconnect_delay=>10,last_rx=>0,last_join=>0,last_ping=>0,pong_deadline=>0,ping_token=>'',send_cursor=>0,
@@ -217,8 +223,8 @@ my @NETS=(
   id=>'undernet',label=>'Undernet',enabled=>$CFG{undernet_enabled},tls=>$CFG{undernet_tls},fast_registration=>1,
   host=>$CFG{undernet_host},port=>$CFG{undernet_port},channel=>$CFG{undernet_teuk},
   channels=>[
-   {name=>$CFG{undernet_teuk},key=>$CFG{undernet_teuk_key},label=>'primary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0},
-   {name=>$CFG{undernet_miaw},key=>'',label=>'secondary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0},
+   {name=>$CFG{undernet_teuk},key=>$CFG{undernet_teuk_key},label=>'primary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0,startup_pending_until=>0,startup_plain=>0,plain_only=>0,send_error=>'',send_retry_at=>0},
+   ($CFG{undernet_miaw}ne''?({name=>$CFG{undernet_miaw},key=>'',label=>'secondary',joined=>0,next_join=>0,join_error=>'',startup_sent=>0,startup_pending_until=>0,startup_plain=>0,plain_only=>0,send_error=>'',send_retry_at=>0}):()),
   ],
   nick=>$CFG{undernet_nick},user=>$CFG{undernet_user},realname=>$CFG{undernet_realname},
   sasl_account=>'',sasl_password=>'',require_sasl=>0,sasl_state=>'off',
@@ -235,11 +241,14 @@ sub net_channels {
 }
 sub delivery_target_id {
  my($net,$channel)=@_;my@c=net_channels($net);
- return$net->{id} if@c<=1;
+ # Undernet is channel-addressable even when only its primary channel is
+ # configured. Keeping the channel-qualified ID preserves its delivery audit
+ # and pending-state identity when an optional secondary target is removed.
+ return$net->{id} if@c<=1&&$net->{id}ne'undernet';
  $net->{id}.':'.lc(clean($channel||''));
 }
 sub target_metric_key {
- my($net,$channel)=@_;my@c=net_channels($net);return$net->{id} if@c<=1;
+ my($net,$channel)=@_;my@c=net_channels($net);return$net->{id} if@c<=1&&$net->{id}ne'undernet';
  my$k=lc(clean($channel||''));$k=~s/^[#&]+//;$k=~s/[^a-z0-9]+/_/g;$k=~s/^_+|_+$//g;
  $net->{id}.'_'.$k;
 }
@@ -251,6 +260,22 @@ sub target_by_id {
  my($id)=@_;$id=clean($id||'');for my$t(enabled_targets()){return$t if$t->{id}eq$id}undef;
 }
 sub current_target_ids { map{$_->{id}}enabled_targets() }
+sub required_target_ids {
+ my%seen;grep{length&&!$seen{$_}++}map{lc clean($_)}split/,/,$CFG{required_targets}||'';
+}
+sub missing_required_targets { grep{!target_by_id($_)}required_target_ids() }
+sub delivery_receipt {
+ my($target_id)=@_;return undef unless ref($RUN{delivery_receipts})eq'HASH';$RUN{delivery_receipts}{$target_id};
+}
+sub cancel_target_receipt {
+ my($net,$channel)=@_;return 0 unless$net;my$id=delivery_target_id($net,$channel);
+ return delete($RUN{delivery_receipts}{$id})?1:0;
+}
+sub cancel_net_receipts {
+ my($net)=@_;return 0 unless$net;my$n=0;
+ for my$id(keys%{$RUN{delivery_receipts}}){my$r=$RUN{delivery_receipts}{$id};next unless ref($r)eq'HASH'&&($r->{network}||'')eq$net->{id};delete$RUN{delivery_receipts}{$id};$n++}
+ $n;
+}
 sub ensure_item_targets {
  my($item)=@_;return[]unless$item&&ref($item)eq'HASH';
  if(ref($item->{targets})ne'ARRAY'||!@{$item->{targets}}){
@@ -295,6 +320,19 @@ sub note_broadcast_complete {
  my$h=broadcast_history_entry($item->{id});if($h){$h->{status}='complete';$h->{completed_at}=int(time)}
  $STATS{broadcast_completed}++;1;
 }
+sub reconcile_loaded_pending_targets {
+ my@current=current_target_ids();return 0 unless@current;
+ my@keep;my$completed=0;
+ for my$item(@{$STATE{pending}}){
+  if(all_networks_delivered($item)){
+   my$h=broadcast_history_entry($item->{id});
+   note_broadcast_complete($item) unless$h&&($h->{status}||'')eq'complete';
+   $completed++;next;
+  }
+  push@keep,$item;
+ }
+ $STATE{pending}=\@keep if$completed;$completed;
+}
 sub note_broadcast_dropped {
  my($item)=@_;return 0 unless$item;
  my$h=broadcast_history_entry($item->{id});if($h){$h->{status}='dropped';$h->{completed_at}=int(time)}
@@ -307,6 +345,9 @@ sub broadcast_target_snapshot {
   push@rows,{
    id=>$t->{id},network=>$t->{net}{id},label=>$t->{net}{label},channel=>$t->{channel},
    online=>$t->{net}{up}?1:0,joined=>$c&&$c->{joined}?1:0,
+   awaiting=>delivery_receipt($t->{id})?1:0,
+   delivery_error=>$c?clean($c->{send_error}||''):'',retry_at=>$c?int($c->{send_retry_at}||0):0,
+   plain_only=>$c&&$c->{plain_only}?1:0,
    sent=>int($d->{sent}||0),last_at=>int($d->{last_at}||0),
    pending=>int($q->{$t->{metric}}||0),oldest_at=>int($q->{$t->{metric}.'_oldest_at'}||0),
   };
@@ -333,7 +374,7 @@ sub irc_summary {
 }
 sub channel_config {
  my($net,$name)=@_;return unless$net;
- for my$c(net_channels($net)){return$c if lc($c->{name})eq lc(clean($name||''))}
+ my$wanted=lc(clean($name||''));for my$c(net_channels($net)){return$c if lc(clean($c->{name}||''))eq$wanted}
  undef;
 }
 sub join_command {
@@ -349,9 +390,10 @@ sub mark_channel_joined {
 }
 sub mark_channel_down {
  my($net,$name,$why)=@_;my$c=channel_config($net,$name);return 0 unless$c;
+ cancel_target_receipt($net,$name);
  $c->{joined}=0;$c->{join_error}=clean($why||'not joined');
  $c->{next_join}=time+($net->{id}eq'undernet'?$CFG{undernet_join_retry}:10);
- $c->{startup_sent}=0;1;
+ $c->{startup_sent}=0;$c->{startup_pending_until}=0;1;
 }
 sub joined_channels {
  my($net)=@_;grep{$_->{joined}}net_channels($net);
@@ -705,6 +747,12 @@ sub load_state {
   $STATS{poll_new}=$STATS{poll_sent} if$STATS{poll_new}<$STATS{poll_sent};
   $STATE{stats_version}=3;
  }
+ # Target sets are configuration, not historical obligations. When an
+ # optional channel is retired, ensure_item_targets() removes that inactive
+ # target from each loaded queue record. Complete records whose remaining
+ # active targets were already acknowledged so a 4-to-3 migration cannot
+ # strand an otherwise finished broadcast forever.
+ reconcile_loaded_pending_targets();
 }
 sub save_state {
  prune_state();my$saved=int(time);
@@ -1901,9 +1949,11 @@ sub irc_raw {
  return 1 if$ok;logmsg('WARN',"[$net->{label}] IRC write failed");irc_disconnect($net,'write error');0;
 }
 sub irc_msg {
- my($net,$target,$text)=@_;return 0 unless$net;
- my$reserve=$CFG{irc_colors}?1:0;$text=byte_limit($text,MAX_IRC_BYTES-$reserve);
- $text.=$R if$CFG{irc_colors}&&$text!~/\Q$R\E\z/;
+ my($net,$target,$text,$force_plain)=@_;return 0 unless$net;
+ my$c=channel_config($net,$target);my$plain=defined($force_plain)?($force_plain?1:0):($c&&$c->{plain_only}?1:0);
+ $text=plain_irc($text) if$plain;
+ my$reserve=$CFG{irc_colors}&&!$plain?1:0;$text=byte_limit($text,MAX_IRC_BYTES-$reserve);
+ $text.=$R if$CFG{irc_colors}&&!$plain&&$text!~/\Q$R\E\z/;
  irc_raw($net,'PRIVMSG '.$target.' :'.$text);
 }
 sub record_history {
@@ -1963,34 +2013,79 @@ sub enqueue {
  save_state()unless$defer;1;
 }
 sub drain_queue {
- my@on=online_nets();return unless@on&&@{$STATE{pending}};my$changed=0;
+ my@on=online_nets();return 0 unless@on&&@{$STATE{pending}};my$sent=0;
  for my$net(@on){
   next if time<$net->{next_send};
   my@channels=net_channels($net);next unless@channels;
   my$start=int($net->{send_cursor}||0)%scalar(@channels);
   for my$off(0..$#channels){
-   my$idx=($start+$off)%scalar(@channels);my$ch=$channels[$idx];next unless$ch->{joined};
+   my$idx=($start+$off)%scalar(@channels);my$ch=$channels[$idx];next unless$ch->{joined};next if$ch->{startup_pending_until};next if($ch->{send_retry_at}||0)>time;
    my$tid=delivery_target_id($net,$ch->{name});
+   next if delivery_receipt($tid);
    my($item)=grep{my%w=map{($_=>1)}item_target_ids($_);$w{$tid}&&!$_->{delivered}{$tid}}@{$STATE{pending}};
    next unless$item;
    $STATS{broadcast_delivery_attempts}++;
-   if(!irc_msg($net,$ch->{name},$item->{text})){$STATS{broadcast_delivery_failures}++;next}
-   my$at=int(time);$item->{delivered}{$tid}=$at;note_broadcast_delivery($item,$tid,$at);mark_source_sent($item);
-   $net->{next_send}=time+$CFG{send_interval};$net->{send_cursor}=($idx+1)%scalar(@channels);$changed=1;
-   $STATS{'irc_'.$net->{id}.'_sent'}++ if exists$STATS{'irc_'.$net->{id}.'_sent'};
-   my$mk=target_metric_key($net,$ch->{name});$STATS{'irc_'.$mk.'_sent'}++ if exists$STATS{'irc_'.$mk.'_sent'};
+   my$plain=$ch->{plain_only}?1:0;
+   if(!irc_msg($net,$ch->{name},$item->{text},$plain)){$STATS{broadcast_delivery_failures}++;next}
+   my$now=time;$RUN{delivery_receipts}{$tid}={item_id=>$item->{id},target_id=>$tid,network=>$net->{id},channel=>$ch->{name},plain=>$plain,sent_at=>$now,confirm_at=>$now+$CFG{delivery_settle}};
+   $net->{next_send}=$now+$CFG{send_interval};$net->{send_cursor}=($idx+1)%scalar(@channels);$sent=1;
    last;
   }
+ }
+ $sent;
+}
+sub settle_irc_deliveries {
+ my($at)=@_;$at//=time;my$changed=0;
+ for my$tid(keys%{$RUN{delivery_receipts}}){
+  my$r=$RUN{delivery_receipts}{$tid};next unless ref($r)eq'HASH';next if$at<($r->{confirm_at}||0);
+  delete$RUN{delivery_receipts}{$tid};
+  my($item)=grep{($_->{id}||'')eq($r->{item_id}||'')}@{$STATE{pending}};next unless$item;next if$item->{delivered}{$tid};
+  my$target=target_by_id($tid);next unless$target;
+  my$done=int($at);$item->{delivered}{$tid}=$done;note_broadcast_delivery($item,$tid,$done);mark_source_sent($item);
+  my$c=channel_config($target->{net},$target->{channel});if($c){$c->{send_error}='';$c->{send_retry_at}=0}
+  $STATS{'irc_'.$target->{net}{id}.'_sent'}++ if exists$STATS{'irc_'.$target->{net}{id}.'_sent'};
+  my$mk=target_metric_key($target->{net},$target->{channel});$STATS{'irc_'.$mk.'_sent'}++ if exists$STATS{'irc_'.$mk.'_sent'};
+  $changed=1;
+ }
+ for my$net(enabled_nets()){
+  for my$ch(net_channels($net)){
+   next unless$ch->{startup_pending_until};next if$at<$ch->{startup_pending_until};
+   $ch->{startup_pending_until}=0;$ch->{startup_sent}=1;$ch->{startup_plain}=0;$ch->{send_error}='';$ch->{send_retry_at}=0;$changed=1;
+  }
+  $net->{startup_sent}=scalar(grep{$_->{joined}&&!$_->{startup_sent}}net_channels($net))?0:1;
  }
  if($changed){
   my@keep;for my$item(@{$STATE{pending}}){if(all_networks_delivered($item)){note_broadcast_complete($item)}else{push@keep,$item}}
   $STATE{pending}=\@keep;save_state();
  }
+ $changed;
+}
+sub reject_irc_delivery {
+ my($net,$numeric,$channel,$reason)=@_;return 0 unless$net;my$c=channel_config($net,$channel);return 0 unless$c;
+ my$tid=delivery_target_id($net,$c->{name});my$r=delete$RUN{delivery_receipts}{$tid};my$startup=$c->{startup_pending_until}?1:0;
+ $STATS{broadcast_delivery_failures}++ if$r;$STATS{irc_delivery_rejected}++;
+ my$was_plain=$r?($r->{plain}?1:0):$startup?($c->{startup_plain}?1:0):1;
+ if($startup){$c->{startup_pending_until}=0;$c->{startup_sent}=0;$c->{startup_plain}=0;$net->{startup_sent}=0}
+ my$why=clean($reason||'send rejected');
+ if(($r||$startup)&&!$was_plain){
+  # Several IRCds use ERR_CANNOTSENDTOCHAN for channels that reject colour
+  # or other presentation controls. Retry the exact delivery once as plain
+  # UTF-8 text before declaring the target unavailable. The learned mode is
+  # channel-local, so presentation on every other IRC target is unchanged.
+  $c->{plain_only}=1;$c->{send_error}='IRC '.$numeric.' '.$why.'; retrying as plain text';
+  $c->{send_retry_at}=time+($CFG{delivery_settle}>1?$CFG{delivery_settle}:1);
+  logmsg('WARN',"[$net->{label}] formatted delivery to $c->{name} rejected (numeric $numeric): $why — retrying once as plain text".($r?'; queued item retained':''));
+  return 1;
+ }
+ $c->{send_error}='IRC '.$numeric.' '.$why;$c->{send_retry_at}=time+$CFG{delivery_retry};
+ logmsg('WARN',"[$net->{label}] delivery to $c->{name} rejected (numeric $numeric): $why".($r?' — queued item retained':''));
+ 1;
 }
 sub irc_disconnect {
  my($net,$why)=@_;return unless$net;
+ my$uncertain=cancel_net_receipts($net);$STATS{broadcast_delivery_failures}+=$uncertain if$uncertain;
  logmsg('WARN',"[$net->{label}] IRC disconnected: $why")if$why;$net->{up}=0;
- for my$ch(net_channels($net)){$ch->{joined}=0;$ch->{startup_sent}=0;$ch->{join_error}=clean($why||'disconnected');$ch->{next_join}=0}
+ for my$ch(net_channels($net)){$ch->{joined}=0;$ch->{startup_sent}=0;$ch->{startup_pending_until}=0;$ch->{join_error}=clean($why||'disconnected');$ch->{next_join}=0}
  eval{close$net->{socket}if$net->{socket}};$net->{socket}=undef;$net->{buf}='';$net->{pong_deadline}=0;$net->{ping_token}='';
  schedule_reconnect($net);
 }
@@ -2046,7 +2141,7 @@ sub irc_connect {
     if($want_sasl&&$net->{require_sasl}&&$net->{sasl_state}ne'ok'){logmsg('WARN',"[$net->{label}] registration completed without required SASL");close$s;return 0}
     for my$ch(@channels){
      my$j=join_command($net,$ch);print{$s}encode('UTF-8',"$j\r\n") if$j ne'';
-     $ch->{joined}=0;$ch->{join_error}='';$ch->{startup_sent}=0;$ch->{next_join}=time+($net->{id}eq'undernet'?$CFG{undernet_join_retry}:10);
+     $ch->{joined}=0;$ch->{join_error}='';$ch->{startup_sent}=0;$ch->{startup_pending_until}=0;$ch->{send_error}='';$ch->{send_retry_at}=0;$ch->{next_join}=time+($net->{id}eq'undernet'?$CFG{undernet_join_retry}:10);
     }
     $join_sent=1;
     if($net->{fast_registration}){
@@ -2117,6 +2212,10 @@ sub read_irc {
     if(scalar(net_channels($net))<=1){irc_disconnect($net,"JOIN rejected for $ch");return}
     next;
    }
+  }
+  if($l=~/\s(404|442)\s+\Q$net->{nick}\E\s+(\S+)\s*:?(.*)$/i){
+   my($num,$ch,$why)=($1,clean($2),clean($3));
+   if(channel_config($net,$ch)){reject_irc_delivery($net,$num,$ch,$why);next}
   }
   if($l=~/^:([^!]+)![^ ]+\s+KICK\s+(\S+)\s+(\S+)\s*:?(.*)$/i&&lc($3)eq lc($net->{nick})&&channel_config($net,$2)){
    my($ch,$why)=(clean($2),clean($4));
@@ -2574,10 +2673,11 @@ sub startup_announce {
   'network '.paint(10,$net->{label});
  my$sent=0;
  for my$ch(net_channels($net)){
-  next unless$ch->{joined};next if$ch->{startup_sent};
-  if(irc_msg($net,$ch->{name},$msg)){$ch->{startup_sent}=1;$sent++}
+  next unless$ch->{joined};next if$ch->{startup_sent}||$ch->{startup_pending_until};next if($ch->{send_retry_at}||0)>time;
+  my$plain=$ch->{plain_only}?1:0;
+  if(irc_msg($net,$ch->{name},$msg,$plain)){$ch->{startup_plain}=$plain;$ch->{startup_pending_until}=time+$CFG{delivery_settle};$sent++}
  }
- $net->{startup_sent}=1 if$sent&&scalar(grep{$_->{joined}&&!$_->{startup_sent}}net_channels($net))==0;
+ $net->{startup_sent}=1 if scalar(grep{$_->{joined}&&!$_->{startup_sent}&&!$_->{startup_pending_until}}net_channels($net))==0;
  $sent;
 }
 
@@ -2622,8 +2722,12 @@ sub health_report {
  push@issues,'Undernet offline' if$NET{undernet}{enabled}&&!$NET{undernet}{up};
  for my$n(enabled_nets()){
   next unless$n->{up};
-  for my$ch(net_channels($n)){push@issues,$n->{label}.' '.$ch->{name}.' not joined' unless$ch->{joined}}
+  for my$ch(net_channels($n)){
+   push@issues,$n->{label}.' '.$ch->{name}.' not joined' unless$ch->{joined};
+   push@issues,$n->{label}.' '.$ch->{name}.' delivery rejected: '.$ch->{send_error} if$ch->{send_error};
+  }
  }
+ push@issues,"required IRC target $_ is not configured" for missing_required_targets();
  push@issues,'HTTP listener down' unless$RUN{listener};
  my$a=api_state();push@issues,"Events API $a" if$CFG{poll_enabled}&&$a=~/^(?:error|limited)$/;
  my$c=actions_state();push@issues,"Actions $c" if$CFG{actions_enabled}&&$c=~/^(?:error|limited)$/;
@@ -3226,14 +3330,14 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
 HTML
 }
 sub status_payload {
- my@targets=map{my$c=channel_config($_->{net},$_->{channel});{network=>$_->{net}{id},label=>$_->{net}{label},channel=>$_->{channel},transport=>$_->{net}{tls}?'tls':'tcp',joined=>$c&&$c->{joined}?1:0,join_error=>$c?clean($c->{join_error}||''):''}}enabled_targets();
+ my@targets=map{my$c=channel_config($_->{net},$_->{channel});{network=>$_->{net}{id},label=>$_->{net}{label},channel=>$_->{channel},transport=>$_->{net}{tls}?'tls':'tcp',joined=>$c&&$c->{joined}?1:0,join_error=>$c?clean($c->{join_error}||''):'',delivery_error=>$c?clean($c->{send_error}||''):'',delivery_retry_at=>$c?int($c->{send_retry_at}||0):0,plain_only=>$c&&$c->{plain_only}?1:0,awaiting=>delivery_receipt($_->{id})?1:0}}enabled_targets();
  +{
   version=>VERSION,repo=>$CFG{repo},uptime=>uptime(),icon_mode=>$CFG{icon_mode},
   irc=>{
    epiknet=>(!$NET{epiknet}{enabled}?'off':$NET{epiknet}{up}?'online':'offline'),
    libera=>(!$NET{libera}{enabled}?'off':$NET{libera}{up}?'online':'offline'),
    undernet=>(!$NET{undernet}{enabled}?'off':$NET{undernet}{up}?'online':'offline'),
-   targets=>\@targets,
+   targets=>\@targets,required_targets=>[required_target_ids()],
    heartbeat=>{idle_ping_seconds=>$CFG{irc_idle_ping},pong_timeout_seconds=>$CFG{irc_pong_timeout},timeouts=>$STATS{irc_heartbeat_timeouts}},
   },
   webhook=>webhook_state(),webhook_detail=>{last_reject_reason=>$STATE{last_hook_reject_reason}||'',last_reject_at=>$STATE{last_hook_reject_at}||0,duplicates=>$STATS{hook_dupe},suppressed=>$STATS{hook_suppressed},bad_signature=>$STATS{hook_bad_signature},bad_content_type=>$STATS{hook_bad_content_type},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected}},
@@ -3248,7 +3352,7 @@ sub status_payload {
    traffic=>{cycles=>$STATS{traffic_cycles},requests=>$STATS{traffic_requests},errors=>$STATS{traffic_errors},forbidden=>$STATS{traffic_forbidden}},
    account=>{polls=>$STATS{account_polls},pages=>$STATS{account_pages},not_modified=>$STATS{account_not_modified},errors=>$STATS{account_errors},repos_seen=>$STATS{account_repos_seen},changes_detected=>$STATS{account_changes_detected}},
    rss=>{polls=>$STATS{rss_polls},new=>$STATS{rss_new},sent=>$STATS{rss_sent},not_modified=>$STATS{rss_not_modified},unchanged=>$STATS{rss_unchanged},errors=>$STATS{rss_errors}},
-   irc=>{epiknet_sent=>$STATS{irc_epiknet_sent},libera_sent=>$STATS{irc_libera_sent},undernet_sent=>$STATS{irc_undernet_sent},undernet_teuk_sent=>$STATS{irc_undernet_teuk_sent},undernet_miaw_sent=>$STATS{irc_undernet_miaw_sent},epiknet_reconnects=>$STATS{irc_epiknet_reconnects},libera_reconnects=>$STATS{irc_libera_reconnects},undernet_reconnects=>$STATS{irc_undernet_reconnects},heartbeat_pings=>$STATS{irc_heartbeat_pings},heartbeat_timeouts=>$STATS{irc_heartbeat_timeouts},join_retries=>$STATS{irc_join_retries},join_rejects=>$STATS{irc_join_rejects},command_throttled=>$STATS{command_throttled}},
+   irc=>{epiknet_sent=>$STATS{irc_epiknet_sent},libera_sent=>$STATS{irc_libera_sent},undernet_sent=>$STATS{irc_undernet_sent},undernet_teuk_sent=>$STATS{irc_undernet_teuk_sent},undernet_miaw_sent=>$STATS{irc_undernet_miaw_sent},delivery_rejected=>$STATS{irc_delivery_rejected},epiknet_reconnects=>$STATS{irc_epiknet_reconnects},libera_reconnects=>$STATS{irc_libera_reconnects},undernet_reconnects=>$STATS{irc_undernet_reconnects},heartbeat_pings=>$STATS{irc_heartbeat_pings},heartbeat_timeouts=>$STATS{irc_heartbeat_timeouts},join_retries=>$STATS{irc_join_retries},join_rejects=>$STATS{irc_join_rejects},command_throttled=>$STATS{command_throttled}},
    queue=>{dropped=>$STATS{queue_dropped},partial_dropped=>$STATS{queue_partial_dropped}},state=>{backups=>$STATS{state_backups},recoveries=>$STATS{state_recoveries},save_errors=>$STATS{state_save_errors}},ops=>{degraded=>$STATS{ops_degraded_alerts},recovered=>$STATS{ops_recovery_alerts}},rate_limit_hits=>$STATS{rate_limit_hits},
   },
   last_github_ok=>$RUN{last_api_ok}||0,last_actions_ok=>$STATE{last_actions_ok}||0,last_traffic_ok=>$STATE{last_traffic_ok}||0,last_account_ok=>$STATE{last_account_ok}||0,
@@ -3343,7 +3447,7 @@ sub prometheus_metrics {
   ['githubwatch_http_requests_total',$STATS{http_requests}],['githubwatch_dashboard_api_requests_total',$STATS{dashboard_api_requests}],['githubwatch_dashboard_api_errors_total',$STATS{dashboard_api_errors}],['githubwatch_http_bad_requests_total',$STATS{http_bad_requests}],['githubwatch_http_chunked_requests_total',$STATS{http_chunked_requests}],['githubwatch_http_expect_continue_total',$STATS{http_expect_continue}],['githubwatch_webhook_root_alias_hits_total',$STATS{hook_root_alias_hits}],['githubwatch_webhook_received_total',$STATS{hook_received}],['githubwatch_webhook_valid_total',$STATS{hook_valid}],['githubwatch_webhook_duplicate_total',$STATS{hook_dupe}],['githubwatch_webhook_suppressed_total',$STATS{hook_suppressed}],['githubwatch_webhook_rejected_total',$STATS{hook_invalid}],['githubwatch_webhook_bad_signature_total',$STATS{hook_bad_signature}],['githubwatch_webhook_bad_content_type_total',$STATS{hook_bad_content_type}],['githubwatch_webhook_missing_headers_total',$STATS{hook_missing_headers}],['githubwatch_webhook_invalid_json_total',$STATS{hook_bad_json}],['githubwatch_webhook_wrong_repo_total',$STATS{hook_wrong_repo}],['githubwatch_webhook_read_rejected_total',$STATS{hook_read_rejected}],
   ['githubwatch_events_polls_total',$STATS{poll_runs}],['githubwatch_events_errors_total',$STATS{poll_errors}],
   ['githubwatch_actions_polls_total',$STATS{actions_polls}],['githubwatch_actions_failures_total',$STATS{actions_failures}],['githubwatch_actions_recoveries_total',$STATS{actions_recoveries}],['githubwatch_actions_slow_alerts_total',$STATS{actions_slow_alerts}],['githubwatch_actions_missing_alerts_total',$STATS{actions_missing_alerts}],['githubwatch_actions_flaky_alerts_total',$STATS{actions_flaky_alerts}],['githubwatch_actions_errors_total',$STATS{actions_errors}],
-  ['githubwatch_broadcast_enqueued_total',$STATS{broadcast_enqueued}],['githubwatch_broadcast_completed_total',$STATS{broadcast_completed}],['githubwatch_broadcast_delivery_attempts_total',$STATS{broadcast_delivery_attempts}],['githubwatch_broadcast_delivery_failures_total',$STATS{broadcast_delivery_failures}],
+  ['githubwatch_broadcast_enqueued_total',$STATS{broadcast_enqueued}],['githubwatch_broadcast_completed_total',$STATS{broadcast_completed}],['githubwatch_broadcast_delivery_attempts_total',$STATS{broadcast_delivery_attempts}],['githubwatch_broadcast_delivery_failures_total',$STATS{broadcast_delivery_failures}],['githubwatch_irc_delivery_rejected_total',$STATS{irc_delivery_rejected}],
   ['githubwatch_traffic_cycles_total',$STATS{traffic_cycles}],['githubwatch_traffic_requests_total',$STATS{traffic_requests}],['githubwatch_traffic_errors_total',$STATS{traffic_errors}],['githubwatch_traffic_forbidden_total',$STATS{traffic_forbidden}],
   ['githubwatch_account_polls_total',$STATS{account_polls}],['githubwatch_account_pages_total',$STATS{account_pages}],['githubwatch_account_not_modified_total',$STATS{account_not_modified}],['githubwatch_account_errors_total',$STATS{account_errors}],['githubwatch_account_repositories_seen_total',$STATS{account_repos_seen}],['githubwatch_account_changes_detected_total',$STATS{account_changes_detected}],
   ['githubwatch_irc_heartbeat_pings_total',$STATS{irc_heartbeat_pings}],['githubwatch_irc_heartbeat_timeouts_total',$STATS{irc_heartbeat_timeouts}],['githubwatch_irc_join_retries_total',$STATS{irc_join_retries}],['githubwatch_irc_join_rejects_total',$STATS{irc_join_rejects}],['githubwatch_http_listener_starts_total',$STATS{http_listener_starts}],
@@ -3799,7 +3903,7 @@ state.document-read
 state.backup-creation
 state.status-primary-and-backup
 ops.degraded-and-recovered-format
-irc.undernet-two-channel-model
+irc.undernet-channel-model
 delivery.epiknet-target-id
 delivery.undernet-target-id-uniqueness
 irc.keyed-join-command
@@ -3856,7 +3960,7 @@ traffic.audience-field-contract
 traffic.trend-public-url-contract
 http.query-parameter-parser
 dashboard.api-payload-contract
-delivery.four-target-enqueue
+delivery.configured-target-enqueue
 delivery.four-target-completion
 delivery.epiknet-wire-format
 delivery.libera-wire-format
@@ -4075,10 +4179,12 @@ sub selftest {
  unlink$sf;unlink"$sf.bak";$CFG{state_file}=$old_state_sf;$CFG{state_backup}=$old_sb;
  my$oph={status=>'degraded',issues=>['Libera offline']};push@t,ops_health_key($oph)=~/Libera offline/&&format_ops_alert('degraded',$oph)=~/DEGRADED/&&format_ops_alert('recovered',{status=>'ok',issues=>[]})=~/RECOVERED/;
 
- # v0.20 multi-network/multi-channel delivery invariants.
- push@t,$NET{undernet}&&scalar(net_channels($NET{undernet}))==2;
+ # v0.20 multi-network/multi-channel delivery invariants. The Undernet
+ # secondary is optional, while its primary keeps a channel-qualified ID.
+ my@uc=net_channels($NET{undernet});
+ push@t,$NET{undernet}&&@uc==($CFG{undernet_miaw}ne''?2:1);
  push@t,delivery_target_id($NET{epiknet},$CFG{irc_channel})eq'epiknet';
- my@uc=net_channels($NET{undernet});push@t,delivery_target_id($NET{undernet},$uc[0]{name})ne delivery_target_id($NET{undernet},$uc[1]{name});
+ push@t,@uc==2?delivery_target_id($NET{undernet},$uc[0]{name})ne delivery_target_id($NET{undernet},$uc[1]{name}):@uc==1&&delivery_target_id($NET{undernet},$uc[0]{name})eq'undernet:'.lc($uc[0]{name});
  my$sentinel='SELFTEST_CHANNEL_KEY_DO_NOT_EXPOSE';
  my$old_ukey=$NET{undernet}{channels}[0]{key};$NET{undernet}{channels}[0]{key}=$sentinel;
  push@t,join_command($NET{undernet},$NET{undernet}{channels}[0])=~/\Q$sentinel\E/;
@@ -4206,7 +4312,7 @@ sub selftest {
  push@t,http_query_param('/githubhook?api=dashboard&x=1','api')eq'dashboard'&&http_query_param('/githubhook?asset=dashboard-js','asset')eq'dashboard-js';
  push@t,ref($dp25)eq'HASH'&&ref($dp25->{recent_activity})eq'ARRAY'&&ref($dp25->{dashboard})eq'HASH'&&$dp25->{dashboard}{mode}eq'component-poll';
 
- # v0.21 deterministic 4-target broadcast regression.
+ # v0.21 deterministic configured-target broadcast regression.
  my@fan_save=map{{enabled=>$_->{enabled},up=>$_->{up},socket=>$_->{socket},next_send=>$_->{next_send},send_cursor=>$_->{send_cursor},
   joined=>[map{$_->{joined}}net_channels($_)]}}@NETS;
  my$old_send=$CFG{send_interval};my$old_fan_state=$CFG{state_file};my$old_fan_backup=$CFG{state_backup};
@@ -4216,13 +4322,13 @@ sub selftest {
  for my$i(0..$#NETS){my$n=$NETS[$i];$n->{enabled}=1;$n->{up}=1;$n->{socket}=$fan_files[$i][1];$n->{next_send}=0;$n->{send_cursor}=0;$_->{joined}=1 for net_channels($n)}
  $CFG{send_interval}=0;$CFG{state_file}="/tmp/githubwatch-fanout-state-$$.json";$CFG{state_backup}=0;
  $STATE{pending}=[];$STATE{broadcast_history}=[];$STATE{delivery_stats}={};$STATE{broadcast_seq}=0;
- enqueue('FANOUT-REGRESSION','selftest',1);my@fan_ids=current_target_ids();push@t,@fan_ids==4&&@{$STATE{pending}}==1&&@{$STATE{pending}[0]{targets}}==4;
- drain_queue();drain_queue();drain_queue();
+ enqueue('FANOUT-REGRESSION','selftest',1);my@fan_ids=current_target_ids();my$fan_expected=2+scalar(net_channels($NET{undernet}));push@t,@fan_ids==$fan_expected&&@{$STATE{pending}}==1&&@{$STATE{pending}[0]{targets}}==$fan_expected;
+ for(1..3){drain_queue();settle_irc_deliveries(time+10)}
  push@t,@{$STATE{pending}}==0&&$STATS{broadcast_completed}>$old_bdone;
  my@fan_wire;for my$x(@fan_files){my($f,$fh)=@$x;seek$fh,0,0;local$/;push@fan_wire,<$fh>;close$fh;unlink$f}
  push@t,index($fan_wire[0],'PRIVMSG '.$CFG{irc_channel}.' :')>=0&&$fan_wire[0]=~/FANOUT-REGRESSION/s;
  push@t,index($fan_wire[1],'PRIVMSG '.$CFG{libera_channel}.' :')>=0&&$fan_wire[1]=~/FANOUT-REGRESSION/s;
- push@t,index($fan_wire[2],'PRIVMSG '.$CFG{undernet_teuk}.' :')>=0&&index($fan_wire[2],'PRIVMSG '.$CFG{undernet_miaw}.' :')>=0&&$fan_wire[2]=~/FANOUT-REGRESSION/s;
+ push@t,index($fan_wire[2],'PRIVMSG '.$CFG{undernet_teuk}.' :')>=0&&($CFG{undernet_miaw}eq''||index($fan_wire[2],'PRIVMSG '.$CFG{undernet_miaw}.' :')>=0)&&$fan_wire[2]=~/FANOUT-REGRESSION/s;
  unlink$CFG{state_file};unlink"$CFG{state_file}.bak";
  for my$i(0..$#NETS){my$n=$NETS[$i];my$s=$fan_save[$i];$n->{enabled}=$s->{enabled};$n->{up}=$s->{up};$n->{socket}=$s->{socket};$n->{next_send}=$s->{next_send};$n->{send_cursor}=$s->{send_cursor};my@c=net_channels($n);for my$j(0..$#c){$c[$j]{joined}=$s->{joined}[$j]}}
  $CFG{send_interval}=$old_send;$CFG{state_file}=$old_fan_state;$CFG{state_backup}=$old_fan_backup;
@@ -4380,6 +4486,11 @@ sub delivery_test_summary {
   broadcast_completed=>int($STATS{broadcast_completed}||0),
   delivery_attempts=>int($STATS{broadcast_delivery_attempts}||0),
   delivery_failures=>int($STATS{broadcast_delivery_failures}||0),
+  delivery_rejected=>int($STATS{irc_delivery_rejected}||0),
+  awaiting=>scalar(keys%{$RUN{delivery_receipts}||{}}),
+  target_errors=>{map{my$t=$_;my$c=channel_config($t->{net},$t->{channel});($t->{id}=>clean($c->{send_error}||''))}enabled_targets()},
+  startup_sent=>{map{my$t=$_;my$c=channel_config($t->{net},$t->{channel});($t->{id}=>$c->{startup_sent}?1:0)}enabled_targets()},
+  startup_pending=>{map{my$t=$_;my$c=channel_config($t->{net},$t->{channel});($t->{id}=>$c->{startup_pending_until}?1:0)}enabled_targets()},
   hook_sent=>int($STATS{hook_sent}||0),
  };
 }
@@ -4388,8 +4499,8 @@ sub delivery_test_step_cli {
  if(env_text('IRC_GITWATCH_TEST_MODE','')ne'1'){
   print STDERR "delivery fixture runner is available only in explicit test mode\n";return 64;
  }
- if(!defined$phase||$phase!~/^(?:seed|partial|resume)$/||!defined$wire_dir||$wire_dir!~m{^/}||!-d$wire_dir){
-  print STDERR "usage: ".APP_NAME." --delivery-test-step seed|partial|resume /absolute/wire-directory\n";return 64;
+ if(!defined$phase||$phase!~/^(?:seed|partial|reject-secondary|startup-reject|startup-double-reject|resume)$/||!defined$wire_dir||$wire_dir!~m{^/}||!-d$wire_dir){
+  print STDERR "usage: ".APP_NAME." --delivery-test-step seed|partial|reject-secondary|startup-reject|startup-double-reject|resume /absolute/wire-directory\n";return 64;
  }
  load_state();$CFG{send_interval}=0;
  if($phase eq'seed'){
@@ -4412,9 +4523,24 @@ sub delivery_test_step_cli {
  }
  if($phase eq'partial'){
   my$under=$NET{undernet};my@channels=net_channels($under);$channels[1]{joined}=0 if@channels>1;
-  local$SIG{__WARN__}=sub{};drain_queue();
+  local$SIG{__WARN__}=sub{};drain_queue();settle_irc_deliveries(time+10);
+ }elsif($phase eq'reject-secondary'){
+  drain_queue();settle_irc_deliveries(time+10);
+  drain_queue();
+  my$under=$NET{undernet};$under->{buf}=':irc.test 404 '.$under->{nick}.' '.$CFG{undernet_miaw}." :Cannot send to channel\r\n";
+  read_irc($under);
+ }elsif($phase eq'startup-reject'||$phase eq'startup-double-reject'){
+  my$under=$NET{undernet};startup_announce($under);
+  $under->{buf}=':irc.test 404 '.$under->{nick}.' '.$CFG{undernet_miaw}." :Cannot send to channel\r\n";
+  read_irc($under);settle_irc_deliveries(time+10);
+  my$c=channel_config($under,$CFG{undernet_miaw});$c->{send_retry_at}=0;
+  startup_announce($under);
+  if($phase eq'startup-double-reject'){
+   $under->{buf}=':irc.test 404 '.$under->{nick}.' '.$CFG{undernet_miaw}." :Cannot send to channel\r\n";
+   read_irc($under);
+  }else{settle_irc_deliveries(time+10)}
  }else{
-  drain_queue()for 1..4;
+  for(1..4){drain_queue();settle_irc_deliveries(time+10)}
  }
  save_state();
  for my$net(enabled_nets()){$net->{socket}=undef;$net->{up}=0}
@@ -4599,7 +4725,7 @@ sub summary {
   "rss=".($CFG{rss_enabled}?$CFG{rss_url}.' every '.$CFG{rss_interval}.'s':'disabled')."\n".
   "epiknet=".($CFG{epiknet_enabled}?"$CFG{irc_host}:$CFG{irc_port} $CFG{irc_channel} as $CFG{irc_nick}":'disabled')."\n".
   "libera=".($CFG{libera_enabled}?"$CFG{libera_host}:$CFG{libera_port} $CFG{libera_channel} as $CFG{libera_nick}":'disabled')."\n".
-  "undernet=".($CFG{undernet_enabled}?"$CFG{undernet_host}:$CFG{undernet_port} ".($CFG{undernet_tls}?'TLS':'TCP')." $CFG{undernet_teuk},$CFG{undernet_miaw} as $CFG{undernet_nick}":'disabled')."\n".
+  "undernet=".($CFG{undernet_enabled}?"$CFG{undernet_host}:$CFG{undernet_port} ".($CFG{undernet_tls}?'TLS':'TCP').' '.join(',',map{$_->{name}}net_channels($NET{undernet}))." as $CFG{undernet_nick}":'disabled')."\n".
   "icons=$CFG{icon_mode}\n".
   "limits=secondary<=$CFG{secondary_max}s http-read=$CFG{http_read_timeout}s heartbeat=".($CFG{irc_idle_ping}?"$CFG{irc_idle_ping}s/$CFG{irc_pong_timeout}s":'off')."\n";
 }
@@ -4687,7 +4813,9 @@ while(!$RUN{stopping}){
 
  $did+=heartbeat_once();
  $did+=rejoin_channels_once();
- drain_queue();
+ $did+=settle_irc_deliveries();
+ $did+=startup_announce($_) for online_nets();
+ $did+=drain_queue();
 
  # One network reconnect per turn. Undernet returns as soon as registration is
  # complete; its channel JOIN confirmations are handled asynchronously above.

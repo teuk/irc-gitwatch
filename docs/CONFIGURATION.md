@@ -71,7 +71,7 @@ Webhook and poll events share fingerprints so the same public activity is announ
 | `GITHUB_ACTIONS_FLAKY_WINDOW_SECONDS` | `0` | Failure/success transition window; `0` disables. |
 | `GITHUB_ACTIONS_FLAKY_TRANSITIONS` | `3` | Transitions required for a flaky alert. |
 
-Version 0.30 also retains up to 500 completed runs for 30 days and derives reliability, incident and runtime statistics from those already-fetched Actions responses. This is intentionally bounded and requires no extra variable, API request or GitHub permission.
+Version 0.31 also retains up to 500 completed runs for 30 days and derives reliability, incident and runtime statistics from those already-fetched Actions responses. This is intentionally bounded and requires no extra variable, API request or GitHub permission.
 
 ## Traffic and account portfolio
 
@@ -97,6 +97,9 @@ Exact rolling 14-day totals come from GitHub's traffic API. Daily rows are retai
 | `IRC_ICON_MODE` | `compat` | `compat`, `emoji` or `ascii`. |
 | `IRC_STARTUP_ANNOUNCE` | `1` | Send a startup status line after join. |
 | `IRC_SEND_INTERVAL_MS` | `800` | Minimum send spacing. |
+| `IRC_DELIVERY_SETTLE_MS` | `1200` | Delay before a successful socket write becomes an acknowledged delivery, allowing IRC rejection numerics to arrive. |
+| `IRC_DELIVERY_RETRY_SECONDS` | `60` | Retry delay after a target rejects even the plain-text attempt. |
+| `IRC_REQUIRED_TARGETS` | empty | Optional comma-separated target ids that must exist in the effective configuration. |
 | `IRC_COMMAND_COOLDOWN_MS` | `750` | Per-user/channel command cooldown. |
 | `IRC_RECONNECT_MAX_SECONDS` | `300` | Maximum reconnect delay. |
 | `IRC_IDLE_PING_SECONDS` | `300` | Heartbeat idle threshold; `0` disables. |
@@ -151,7 +154,9 @@ Set SASL account and password together. If SASL is required, registration fails 
 | `UNDERNET_CONNECT_TIMEOUT_SECONDS` | `5` |
 | `UNDERNET_REGISTER_TIMEOUT_SECONDS` | `12` |
 
-Both channels share one TCP connection but remain independent delivery targets. Legacy `UNDERNET_CHANNEL_TEUK`, `UNDERNET_CHANNEL_TEUK_KEY` and `UNDERNET_CHANNEL_MIAW` environment names remain accepted as fallbacks for v0.29 migration.
+The secondary channel is optional: set `UNDERNET_CHANNEL_SECONDARY=` explicitly to run only the primary. When both are configured they share one TCP connection but remain independent delivery targets. Undernet target ids stay channel-qualified even with only one channel, so removing a secondary target does not rename or replay the primary delivery history. `--config-check` prints the exact ids accepted by `IRC_REQUIRED_TARGETS`.
+
+Legacy `UNDERNET_CHANNEL_TEUK`, `UNDERNET_CHANNEL_TEUK_KEY` and `UNDERNET_CHANNEL_MIAW` environment names remain accepted as fallbacks for v0.29 migration.
 
 ## RSS/Atom
 

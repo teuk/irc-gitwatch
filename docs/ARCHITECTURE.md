@@ -25,9 +25,13 @@ Completed Actions runs are normalized into a separate bounded history (30 days, 
 
 ## Delivery invariant
 
-One normalized announcement becomes one queue record with an explicit target set. Every network/channel acknowledges delivery independently. A record leaves the queue only after every target has succeeded; partial progress survives state saves and restarts.
+One normalized announcement becomes one queue record with an explicit target set. Every network/channel acknowledges delivery independently. A successful socket write first becomes a short-lived receipt; only expiry of the IRC rejection window turns it into a durable acknowledgement. Numeric 404/442 rejection clears the receipt, retains the queue record and makes the target error visible.
 
-The delivery black box forces one IRC write failure and one unavailable channel, restarts the Perl process, then verifies that only the two missing targets are served. A second restart must emit nothing. Wire captures, queue audit and per-target counters must agree exactly.
+Formatted rejection is retried once as plain UTF-8 for that channel only. If the plain retry is also rejected, health remains degraded and no success is invented. A record leaves the queue only after every active target has succeeded; partial progress survives state saves and restarts.
+
+Configured target sets may intentionally shrink. On state load, inactive targets are retired from pending obligations while historical audit values remain intact. If all remaining targets were already acknowledged, the record completes immediately without replay. Undernet target ids remain channel-qualified so a primary target keeps the same identity when its optional secondary disappears.
+
+The 57-assertion delivery black box forces socket failure, an unavailable channel, formatted and plain rejection, process restarts and a four-to-three target migration. Wire captures, queue audit and per-target counters must agree exactly, and already successful targets must never be served twice.
 
 The queue is bounded. When space is exhausted, eviction and partial-delivery loss are separately counted and surfaced rather than hidden.
 
@@ -40,7 +44,7 @@ The queue is bounded. When space is exhausted, eviction and partial-delivery los
 - Bounded histories, IDs, fingerprints, delivery audits, CI runs and account changes.
 - Legacy activity text is repaired at display/serialization boundaries without rewriting unrelated strings.
 
-Before replacing the primary file, backup rotation parses and validates the current primary. Invalid bytes are never promoted into `.bak`. If the primary is corrupt or missing, startup may load the validated backup; the next save atomically rebuilds the primary while retaining pending fan-out, acknowledgements, fingerprints, history and counters. The disaster-recovery black box proves both incidents in separate Perl processes and checks mode `0600` after repair.
+Before replacing the primary file, backup rotation parses and validates the current primary. Invalid bytes are never promoted into `.bak`. If the primary is corrupt or missing, startup may load the validated backup; the next save atomically rebuilds the primary while retaining pending fan-out, acknowledgements, fingerprints, history and counters. The disaster-recovery black box proves both incidents in separate Perl processes and checks mode `0600` after repair. Target retirement remains an in-schema normalization and does not require a state-version bump.
 
 ## Scope and privacy invariant
 

@@ -57,6 +57,16 @@ sudo systemctl enable --now irc-gitwatch.service
 
 The unit's `StateDirectory=irc-gitwatch` creates `/var/lib/irc-gitwatch` with the correct service ownership.
 
+To use only one Undernet channel, set the secondary explicitly empty in the environment file:
+
+```bash
+UNDERNET_CHANNEL_PRIMARY='#your-channel'
+UNDERNET_CHANNEL_SECONDARY=
+IRC_REQUIRED_TARGETS='undernet:#your-channel'
+```
+
+Add EpiKnet or Libera target ids to `IRC_REQUIRED_TARGETS` when those networks are enabled. `--config-check` prints the effective target ids and fails closed if a required one is absent.
+
 ## GitHub token
 
 Create a token for the account that can read the monitored repository. Use the narrowest repository selection and permissions compatible with the features you enable:
@@ -108,4 +118,4 @@ Useful one-shot checks are listed in the main README. `--doctor` performs networ
 6. Run `--state-check`, `--config-check`, `--selftest` and the packaged validation gate before starting the service.
 7. Start only the new service.
 
-Do not run two instances against the same state file or IRC targets. Version 0.30 retains the v0.29 state schema and metrics prefix specifically to make this migration uneventful. Its additive CI reliability history starts filling on the first successful Actions scan; no manual state migration is needed.
+Do not run two instances against the same state file or IRC targets. Version 0.31 retains the v0.29 state schema and metrics prefix specifically to make this migration uneventful. Its additive CI reliability history starts filling on the first successful Actions scan; no manual state migration is needed. If an optional secondary IRC channel is removed, saved pending records are reconciled against the remaining targets at startup without replaying acknowledgements already recorded for them.
