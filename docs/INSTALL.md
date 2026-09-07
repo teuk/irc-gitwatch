@@ -86,9 +86,9 @@ sudo chmod 0600 /etc/irc-gitwatch.env
 
 ## Webhook and TLS proxy
 
-The daemon listens on loopback by default. Configure your reverse proxy to forward only the chosen webhook path and, if desired, separately protect dashboard routes with an ACL or authentication layer.
+The daemon listens on loopback by default. Configure your reverse proxy to forward only the chosen webhook path and, if desired, separately protect dashboard routes with an ACL or authentication layer. When exposing the multi-repository dashboard, forward both its root and `/repo/` so selector-generated deep links reach the same listener.
 
-GitHub webhook settings:
+GitHub webhook settings (repeat on every repository named by `GITHUB_REPO` and `GITHUB_REPOS`):
 
 - URL: `https://your-host.example/githubhook`
 - Content type: `application/json`
@@ -113,9 +113,9 @@ Useful one-shot checks are listed in the main README. `--doctor` performs networ
 1. Stop the old service cleanly so its latest state is saved.
 2. Run `--state-check`, then back up the primary state, its validated `.bak` copy when present, and the environment file.
 3. Install IRC GitWatch without starting it.
-4. Set `GITHUB_REPO`, `GITHUB_ACCOUNT` and `GITHUB_STATE_FILE` explicitly.
+4. Set `GITHUB_REPO`, optional `GITHUB_REPOS`, `GITHUB_ACCOUNT` and `GITHUB_STATE_FILE` explicitly.
 5. Copy the state file to `/var/lib/irc-gitwatch/state.json`, owner `irc-gitwatch`, mode `0600`.
 6. Run `--state-check`, `--config-check`, `--selftest` and the packaged validation gate before starting the service.
 7. Start only the new service.
 
-Do not run two instances against the same state file or IRC targets. Version 0.31 retains the v0.29 state schema and metrics prefix specifically to make this migration uneventful. Its additive CI reliability history starts filling on the first successful Actions scan; no manual state migration is needed. If an optional secondary IRC channel is removed, saved pending records are reconciled against the remaining targets at startup without replaying acknowledgements already recorded for them.
+Do not run two instances against the same state file or IRC targets. Version 0.33 retains the v0.29 state schema and metrics prefix specifically to make migration uneventful. Existing state becomes the primary repository's state; each new repository establishes its own Events and Actions baseline without replay. If an optional secondary IRC channel is removed, saved pending records are reconciled against the remaining targets at startup without replaying acknowledgements already recorded for them.

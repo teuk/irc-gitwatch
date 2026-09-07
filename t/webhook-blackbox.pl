@@ -10,12 +10,14 @@ use JSON::PP qw(decode_json);
 use POSIX qw(_exit);
 
 my $repo='octocat/Hello-World';
+my $repo2='octocat/Second-World';
+my $repo3='octocat/Third-World';
 my $secret='synthetic-local-webhook-secret';
 my $fixture_dir='t/fixtures/webhooks';
 my $temp_dir=tempdir('irc-gitwatch-webhook-XXXXXX',TMPDIR=>1,CLEANUP=>1);
 my $stderr_file="$temp_dir/server.stderr";
 my $state_file="$temp_dir/state.json";
-my $expected_requests=29;
+my $expected_requests=40;
 my $sent_requests=0;
 my $server_pid=0;
 my @checks;
@@ -37,6 +39,7 @@ sub start_server {
   open STDOUT,'>&',$ready_w or _exit(125);close$ready_w;
   open STDERR,'>:raw',$stderr_file or _exit(125);
   $ENV{GITHUB_REPO}=$repo;
+  $ENV{GITHUB_REPOS}="$repo2,$repo3";
   $ENV{GITHUB_TOKEN}='';
   $ENV{IRC_GITWATCH_TEST_MODE}=1;
   $ENV{GITHUB_WEBHOOK_SECRET}=$secret;
@@ -119,6 +122,9 @@ my $ok=eval{
  response_check('webhook.push-queued',signed_webhook($port,'push','delivery-push','push'),202,'queued');
  response_check('webhook.delivery-replay',signed_webhook($port,'push','delivery-push','push'),200,'duplicate');
  response_check('webhook.fingerprint-replay',signed_webhook($port,'push','delivery-push-fingerprint','push'),200,'already seen');
+ my$second_push=fixture('push');$second_push=~s/\Q$repo\E/$repo2/g;
+ response_check('webhook.second-repository-queued',signed_webhook($port,'push','delivery-second-repo','push',body=>$second_push),202,'queued');
+ response_check('webhook.second-repository-fingerprint-replay',signed_webhook($port,'push','delivery-second-repo-fingerprint','push',body=>$second_push),200,'already seen');
  response_check('webhook.bad-signature',signed_webhook($port,'issues','delivery-bad-signature','issues',bad_signature=>1),401,'bad signature');
  response_check('webhook.missing-signature',signed_webhook($port,'issues','delivery-missing-signature','issues',omit_signature=>1),401,'bad signature');
  my$original=fixture('ping');
@@ -141,17 +147,37 @@ my $ok=eval{
  response_check('http.oversized-body',exchange($port,'POST','/githubhook',{'Content-Type'=>'application/json'},'',1025),413,'rejected');
 
  my$dashboard=exchange($port,'GET','/?api=dashboard',{},'',undef);my$dashboard_json=eval{decode_json($dashboard->{body})};
- record_check('surface.dashboard-json',$dashboard->{status}==200&&$dashboard_json&&ref($dashboard_json->{recent_activity})eq'ARRAY'&&@{$dashboard_json->{recent_activity}}==5);
+ record_check('surface.dashboard-json',$dashboard->{status}==200&&$dashboard_json&&ref($dashboard_json->{recent_activity})eq'ARRAY'&&@{$dashboard_json->{recent_activity}}==5&&$dashboard_json->{selected_repo}eq$repo&&$dashboard_json->{primary_repo}eq$repo);
+ my$dashboard_html=exchange($port,'GET','/',{},'',undef);
+ record_check('surface.dashboard-repository-selector',$dashboard_html->{status}==200&&$dashboard_html->{body}=~/id="repo-select"/&&$dashboard_html->{body}=~/id="repo-tabs"/&&$dashboard_html->{body}=~/id="repo-context-health"/&&$dashboard_html->{body}=~/<option value="\Q$repo\E" selected>/&&$dashboard_html->{body}=~/<option value="\Q$repo2\E">/&&$dashboard_html->{body}=~/<option value="\Q$repo3\E">/&&$dashboard_html->{body}=~/data-repo="\Q$repo3\E"/);
+ my$repo_html=exchange($port,'GET','/repo/octocat/Second-World',{},'',undef);
+ record_check('surface.dashboard-repository-deep-link',$repo_html->{status}==200&&$repo_html->{body}=~/<option value="\Q$repo2\E" selected>/&&$repo_html->{body}=~/id="traffic-repo">\Q$repo2\E</);
+ my$repo_asset=exchange($port,'GET','/repo/octocat/Second-World?asset=dashboard-js',{},'',undef);
+ record_check('surface.dashboard-deep-link-asset',$repo_asset->{status}==200&&$repo_asset->{body}=~/history\.pushState/&&$repo_asset->{body}=~/popstate/);
+ my$repo_dashboard=exchange($port,'GET','/repo/octocat/Second-World?api=dashboard',{},'',undef);my$repo_dashboard_json=eval{decode_json($repo_dashboard->{body})};
+ record_check('surface.dashboard-deep-link-json',$repo_dashboard->{status}==200&&$repo_dashboard_json&&$repo_dashboard_json->{selected_repo}eq$repo2&&$repo_dashboard_json->{primary_repo}eq$repo&&$repo_dashboard_json->{github_traffic}{repo}eq$repo2&&$repo_dashboard_json->{dashboard}{repository_path}eq'/repo/octocat/Second-World');
+ my$query_dashboard=exchange($port,'GET','/?api=dashboard&repo=Second-World',{},'',undef);my$query_dashboard_json=eval{decode_json($query_dashboard->{body})};
+ record_check('surface.dashboard-query-selector-compatibility',$query_dashboard->{status}==200&&$query_dashboard_json&&$query_dashboard_json->{selected_repo}eq$repo2);
+ response_check('surface.dashboard-unknown-repository',exchange($port,'GET','/repo/octocat/Not-Watched',{},'',undef),404,'unknown repository');
  my$broadcast=exchange($port,'GET','/broadcast.json',{},'',undef);my$broadcast_json=eval{decode_json($broadcast->{body})};
- record_check('surface.broadcast-queue',$broadcast->{status}==200&&$broadcast_json&&$broadcast_json->{configured_targets}==1&&$broadcast_json->{pending_events}==5&&$broadcast_json->{enqueued}==5);
+ record_check('surface.broadcast-queue',$broadcast->{status}==200&&$broadcast_json&&$broadcast_json->{configured_targets}==1&&$broadcast_json->{pending_events}==6&&$broadcast_json->{enqueued}==6);
+ my$ci_second=exchange($port,'GET','/ci.json?repo=Second-World',{},'',undef);my$ci_second_json=eval{decode_json($ci_second->{body})};
+ record_check('surface.ci-repository-selector',$ci_second->{status}==200&&$ci_second_json&&$ci_second_json->{repo}eq$repo2);
+ my$traffic_second=exchange($port,'GET','/?api=traffic&repo=octocat%2FSecond-World',{},'',undef);my$traffic_second_json=eval{decode_json($traffic_second->{body})};
+ record_check('surface.traffic-repository-selector',$traffic_second->{status}==200&&$traffic_second_json&&$traffic_second_json->{repo}eq$repo2);
+ response_check('surface.unknown-repository-selector',exchange($port,'GET','/ci.json?repo=not-configured',{},'',undef),404,'unknown repository');
  my$metrics=exchange($port,'GET','/metrics',{},'',undef);
- record_check('surface.prometheus-counters',$metrics->{status}==200&&$metrics->{body}=~/githubwatch_webhook_received_total 20\n/&&$metrics->{body}=~/githubwatch_webhook_valid_total 9\n/&&$metrics->{body}=~/githubwatch_webhook_duplicate_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_suppressed_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_rejected_total 10\n/&&$metrics->{body}=~/githubwatch_webhook_bad_content_type_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_wrong_repo_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_read_rejected_total 1\n/&&$metrics->{body}=~/githubwatch_broadcast_enqueued_total 5\n/);
+ record_check('surface.prometheus-counters',$metrics->{status}==200&&$metrics->{body}=~/githubwatch_webhook_received_total 22\n/&&$metrics->{body}=~/githubwatch_webhook_valid_total 11\n/&&$metrics->{body}=~/githubwatch_webhook_duplicate_total 3\n/&&$metrics->{body}=~/githubwatch_webhook_suppressed_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_rejected_total 10\n/&&$metrics->{body}=~/githubwatch_webhook_bad_content_type_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_wrong_repo_total 2\n/&&$metrics->{body}=~/githubwatch_webhook_read_rejected_total 1\n/&&$metrics->{body}=~/githubwatch_broadcast_enqueued_total 6\n/&&$metrics->{body}=~/githubwatch_repository_configured\{repo="octocat\/Hello-World"\} 1\n/&&$metrics->{body}=~/githubwatch_repository_configured\{repo="octocat\/Second-World"\} 1\n/&&$metrics->{body}=~/githubwatch_repository_configured\{repo="octocat\/Third-World"\} 1\n/);
  my$final=exchange($port,'GET','/status.json',{},'',undef);my$final_json=eval{decode_json($final->{body})};my$w=$final_json&&$final_json->{counters}{webhook};
- record_check('surface.status-counters',$final->{status}==200&&$w&&$w->{received}==20&&$w->{valid}==9&&$w->{duplicates}==2&&$w->{suppressed}==2&&$w->{rejected}==10&&$w->{bad_signature}==3&&$w->{bad_content_type}==2&&$w->{missing_headers}==2&&$w->{invalid_json}==1&&$w->{wrong_repo}==2&&$w->{read_rejected}==1&&$final_json->{queue}==5);
+ record_check('surface.status-counters',$final->{status}==200&&$w&&$w->{received}==22&&$w->{valid}==11&&$w->{duplicates}==3&&$w->{suppressed}==2&&$w->{rejected}==10&&$w->{bad_signature}==3&&$w->{bad_content_type}==2&&$w->{missing_headers}==2&&$w->{invalid_json}==1&&$w->{wrong_repo}==2&&$w->{read_rejected}==1&&$final_json->{queue}==6);
+ record_check('surface.repository-contract',$final_json&&$final_json->{repo}eq$repo&&join(',',@{$final_json->{repos}||[]})eq"$repo,$repo2,$repo3"&&ref($final_json->{repositories})eq'ARRAY'&&@{$final_json->{repositories}}==3);
 
  record_check('harness.request-cardinality',$sent_requests==$expected_requests);
  waitpid($server_pid,0);my$server_rc=$?>>8;$server_pid=0;
  record_check('harness.server-clean-exit',$server_rc==0);
+ open my$state_fh,'<:raw',$state_file or die"cannot read state: $!\n";local$/;my$state=decode_json(<$state_fh>);close$state_fh;
+ record_check('state.repository-isolation',ref($state->{repo_state})eq'HASH'&&ref($state->{repo_state}{lc$repo})eq'HASH'&&ref($state->{repo_state}{lc$repo2})eq'HASH'&&ref($state->{repo_state}{lc$repo3})eq'HASH');
+ record_check('state.primary-legacy-view',ref($state->{event_seen})eq'HASH'&&$state->{state_version}==11);
  1;
 };
 

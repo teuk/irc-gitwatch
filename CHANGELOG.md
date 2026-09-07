@@ -2,6 +2,38 @@
 
 All notable changes are documented here. The project follows semantic intent while the original production version number is retained for the first public release.
 
+## 0.33 — 2026-09-07 🔮
+
+### Added
+
+- A compact repository selector plus a one-click watched-project rail in the sticky dashboard header; every configured repository is visible without starting another daemon.
+- Per-project Events, CI and Traffic signals, primary-scope marker, selection position and permalink in the repository rail, with a guarded loading transition that avoids presenting stale statistics as the newly selected scope.
+- First-class `/repo/<owner>/<repository>` dashboard deep links with browser Back/Forward support.
+- Repository-scoped live dashboard payloads so Traffic, unique-audience and CI reliability panels switch together and reject unknown scopes.
+- HTTP black-box and deterministic coverage for three-project selector/rail markup, deep-link HTML/assets/JSON, query compatibility and selected-scope identity.
+
+### Compatibility
+
+- `/` remains the primary repository view, existing `?repo=` CI/Traffic selectors remain valid, and `/status.json` keeps its historical primary `repo` field.
+- State schema 11, GitHub request scheduling, webhook admission, IRC fan-out and Prometheus metrics are unchanged. The owl merely learned which scroll to place on the lectern. 🦉📜
+
+## 0.32 — 2026-09-07 🪄
+
+### Added
+
+- One daemon can watch an ordered set of repositories: `GITHUB_REPO` remains primary and `GITHUB_REPOS` adds comma-separated scopes.
+- Independent Events baselines/ETags, Actions and CI incident models, Traffic histories and scheduler clocks for every watched repository.
+- Round-robin repository maintenance so one busy project's catch-up cannot starve another project or the shared IRC/HTTP loop.
+- Repository identity on every multi-repository IRC activity announcement.
+- Additive `repos` and `repositories` status fields, repository-selectable CI/Traffic JSON, `githubwatch_repository_*` Prometheus gauges and `!github watch` diagnostics.
+- Signed-webhook black-box coverage for admission, fingerprint separation, persisted scope state and metrics across two repositories.
+
+### Compatibility
+
+- State remains schema 11. Repository-local data lives under additive `repo_state`; the primary repository is mirrored into the historical top-level fields so a v0.31 rollback can still read its state.
+- Existing single-repository configuration behaves as before. A newly added repository establishes polling and Actions baselines without replaying old activity.
+- The shared token, HMAC secret, GitHub rate-limit budget, account inventory, RSS source and persistent per-target IRC queue remain unchanged — one owl, several scrolls, no duplicate deliveries. 🦉
+
 ## 0.31 — 2026-09-02
 
 ### Added

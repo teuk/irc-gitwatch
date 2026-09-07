@@ -70,6 +70,6 @@ Portfolio data is restricted to `GITHUB_ACCOUNT` and public owner repositories.
 | `!github endpoints` | Local HTTP route map. |
 | `!github icons` | Active icon compatibility mode. |
 | `!github events` | Public event classes and deliberate exclusions. |
-| `!github repo` | Monitored repository URL. |
+| `!github repo` / `watch` | Ordered watched-repository list and primary marker. |
 
 Security-alert payloads are deliberately excluded from public IRC announcements.

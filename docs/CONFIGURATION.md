@@ -9,6 +9,7 @@ IRC GitWatch reads configuration exclusively from environment variables. Values 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GITHUB_REPO` | `teuk/irc-gitwatch` | Exact `owner/repository` scope. |
+| `GITHUB_REPOS` | empty | Comma-separated additional `owner/repository` scopes watched by the same daemon. |
 | `GITHUB_ACCOUNT` | repository owner | Public owner portfolio account. |
 | `GITHUB_TOKEN` | empty | GitHub API bearer token. |
 | `GITHUB_STATE_FILE` | `/var/lib/irc-gitwatch/state.json` | Absolute persistent state path. |
@@ -18,6 +19,8 @@ IRC GitWatch reads configuration exclusively from environment variables. Values 
 | `GITHUB_SECONDARY_BACKOFF_MAX_SECONDS` | `900` | Maximum secondary-limit backoff. |
 
 When `GITHUB_ACCOUNT` is empty, the owner portion of `GITHUB_REPO` is used. Portfolio responses are filtered to public, non-private repository records whose owner and full name match this account.
+
+`GITHUB_REPO` remains the primary and backward-compatible scope. Values in `GITHUB_REPOS` are trimmed and deduplicated case-insensitively; the primary is included automatically. Events, Actions/CI and Traffic cursors and histories are independent per repository. The token, webhook secret, rate-limit budget, delivery queue, IRC targets, account portfolio and optional RSS feed remain process-wide.
 
 ## Webhook and dashboard
 
@@ -46,7 +49,7 @@ GET/HEAD routes do not implement authentication. Keep the listener private or ad
 | `GITHUB_RECONCILE_SECONDS` | `300` | Base reconciliation interval. |
 | `GITHUB_EVENTS_MAX_PAGES` | `3` | Maximum event pages per catch-up scan. |
 
-Webhook and poll events share fingerprints so the same public activity is announced once.
+Webhook and poll events share fingerprints so the same public activity is announced once. Fingerprints include the repository identity, so equivalent commit/ref values in two repositories do not collide. Configure every watched repository's webhook with the same payload URL and `GITHUB_WEBHOOK_SECRET`.
 
 ## GitHub Actions
 
@@ -71,7 +74,7 @@ Webhook and poll events share fingerprints so the same public activity is announ
 | `GITHUB_ACTIONS_FLAKY_WINDOW_SECONDS` | `0` | Failure/success transition window; `0` disables. |
 | `GITHUB_ACTIONS_FLAKY_TRANSITIONS` | `3` | Transitions required for a flaky alert. |
 
-Version 0.31 also retains up to 500 completed runs for 30 days and derives reliability, incident and runtime statistics from those already-fetched Actions responses. This is intentionally bounded and requires no extra variable, API request or GitHub permission.
+Each watched repository retains up to 500 completed runs for 30 days and derives reliability, incident and runtime statistics from those already-fetched Actions responses. This is intentionally bounded and requires no extra variable, API request or GitHub permission.
 
 ## Traffic and account portfolio
 
@@ -87,7 +90,7 @@ Version 0.31 also retains up to 500 completed runs for 30 days and derives relia
 | `GITHUB_ACCOUNT_STALE_DAYS` | `180` | Stale-project threshold. |
 | `GITHUB_ACCOUNT_CHANGES_MAX` | `100` | Retained portfolio changes. |
 
-Exact rolling 14-day totals come from GitHub's traffic API. Daily rows are retained for up to 400 days for longer trends. Unique figures are GitHub aggregates, not IP-address observations.
+Exact rolling 14-day totals come from GitHub's traffic API. Daily rows are retained independently per watched repository for up to 400 days. Unique figures are GitHub aggregates, not IP-address observations. The HTML dashboard opens `GITHUB_REPO` at `/` and lists every configured scope in its header selector and watched-project rail. The rail reports repository-local Events, CI and Traffic state, marks the primary, and exposes the current permalink. A selection switches Traffic, unique-audience and CI reliability data together and receives a `/repo/<owner>/<repository>` deep link. `/traffic.json`, `/ci.json` and dashboard JSON accept `?repo=owner/name` (or an unambiguous short repository name).
 
 ## IRC presentation and queue
 

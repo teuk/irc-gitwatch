@@ -10,6 +10,7 @@ use JSON::PP qw(decode_json);
 use POSIX qw(_exit);
 
 my $repo='octocat/Hello-World';
+my $repo2='octocat/Second-World';
 my $secret='synthetic-local-reconciliation-secret';
 my $webhook_dir='t/fixtures/webhooks';
 my $reconcile_dir='t/fixtures/reconciliation';
@@ -36,6 +37,7 @@ sub state_document {
 sub configure_test_environment {
  my($state)=@_;
  $ENV{GITHUB_REPO}=$repo;
+ $ENV{GITHUB_REPOS}=$repo2;
  $ENV{GITHUB_TOKEN}='';
  $ENV{IRC_GITWATCH_TEST_MODE}=1;
  $ENV{GITHUB_WEBHOOK_SECRET}=$secret;
@@ -109,13 +111,15 @@ sub webhook {
 }
 
 sub run_reconciliation {
- my($state,$fixture,$mode)=@_;pipe(my$out_r,my$out_w)or die"pipe: $!\n";
+ my($state,$fixture,$mode,$selected_repo)=@_;pipe(my$out_r,my$out_w)or die"pipe: $!\n";
  my$pid=fork();die"fork: $!\n"unless defined$pid;
  if(!$pid){
   close$out_r;open STDOUT,'>&',$out_w or _exit(125);close$out_w;
   open STDERR,'>>:raw',$diagnostic_file or _exit(125);
   configure_test_environment($state);
-  exec{$^X}$^X,'irc-gitwatch.pl','--reconciliation-test-fixture',"$reconcile_dir/$fixture.json",$mode or _exit(126);
+  my$fixture_path=$fixture=~m{^/}?$fixture:"$reconcile_dir/$fixture.json";
+  my@args=('irc-gitwatch.pl','--reconciliation-test-fixture',$fixture_path,$mode);push@args,$selected_repo if defined$selected_repo&&$selected_repo ne'';
+  exec{$^X}$^X,@args or _exit(126);
  }
  close$out_w;local$/;my$raw=<$out_r>;close$out_r;waitpid($pid,0);my$rc=$?>>8;
  my$doc=eval{decode_json($raw//'')};my$out={rc=>$rc,raw=>$raw//''};
@@ -191,6 +195,20 @@ my$ok=eval{
  record_check('poll-first.state-mode',@mode_b&&($mode_b[2]&07777)==0600);
  record_check('poll-first.queue-persisted',@{$state_b_doc->{pending}||[]}==1&&$state_b_doc->{pending}[0]{source}eq'poll'&&join(',',@{$state_b_doc->{pending}[0]{targets}||[]})eq'epiknet');
  record_check('poll-first.counters-persisted',$state_b_doc->{stats}{hook_valid}==1&&$state_b_doc->{stats}{hook_dupe}==1&&$state_b_doc->{stats}{poll_new}==1&&$state_b_doc->{stats}{broadcast_enqueued}==1);
+
+ # Both repositories may observe identical GitHub event ids and commit SHAs.
+ # Their baselines/cursors are independent and their fingerprints include the
+ # repository, while announcements still converge into the shared queue.
+ my$state_c="$temp_dir/multi-repository.json";
+ my$secondary_baseline="$temp_dir/secondary-baseline.json";my$secondary_new="$temp_dir/secondary-new.json";
+ for my$pair([$reconcile_dir.'/baseline.json',$secondary_baseline],[$reconcile_dir.'/new_push.json',$secondary_new]){my$raw=slurp($pair->[0]);$raw=~s/\Q$repo\E/$repo2/g;open my$fh,'>:raw',$pair->[1]or die"cannot write $pair->[1]: $!\n";print{$fh}$raw;close$fh}
+ my$c0=run_reconciliation($state_c,'baseline','baseline',$repo);my$c1=run_reconciliation($state_c,$secondary_baseline,'baseline',$repo2);
+ record_check('multi.baselines-independent',$c0->{rc}==0&&$c1->{rc}==0&&$c0->{doc}{repo}eq$repo&&$c1->{doc}{repo}eq$repo2&&$c0->{doc}{event_seen}==2&&$c1->{doc}{event_seen}==2&&$c1->{doc}{pending}==0);
+ my$c2=run_reconciliation($state_c,'new_push','incremental',$repo);my$c3=run_reconciliation($state_c,$secondary_new,'incremental',$repo2);
+ record_check('multi.same-event-id-per-repository',$c2->{rc}==0&&$c3->{rc}==0&&$c3->{doc}{event_seen}==3&&$c3->{doc}{pending}==2&&$c3->{doc}{fingerprints}==2);
+ my$state_c_doc=state_document($state_c);my$pstate=$state_c_doc->{repo_state}{lc$repo};my$sstate=$state_c_doc->{repo_state}{lc$repo2};
+ record_check('multi.state-cursors-isolated',$pstate&&$sstate&&scalar(keys%{$pstate->{event_seen}})==3&&scalar(keys%{$sstate->{event_seen}})==3&&scalar(keys%{$state_c_doc->{event_seen}})==3);
+ record_check('multi.announcements-labelled',@{$state_c_doc->{pending}||[]}==2&&$state_c_doc->{pending}[0]{text}=~/\Q[$repo]\E/&&$state_c_doc->{pending}[1]{text}=~/\Q[$repo2]\E/);
  1;
 };
 

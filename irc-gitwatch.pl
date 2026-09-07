@@ -20,7 +20,7 @@ binmode STDOUT, ':encoding(UTF-8)' or die "STDOUT UTF-8: $!";
 binmode STDERR, ':encoding(UTF-8)' or die "STDERR UTF-8: $!";
 $SIG{PIPE}='IGNORE'; # A proxy/client disconnect must never kill the daemon.
 
-use constant VERSION          => '0.31';
+use constant VERSION          => '0.33';
 use constant APP_NAME         => 'IRC GitWatch';
 use constant API_VERSION      => '2026-03-10';
 use constant MAX_IRC_BYTES    => 370;
@@ -41,6 +41,7 @@ sub env_bool { my ($k,$d)=@_; lc(env_text($k,$d?'1':'0')) =~ /^(?:0|no|false|off
 
 my %CFG=(
  repo              => env_text('GITHUB_REPO','teuk/irc-gitwatch'),
+ repos_extra       => env_text('GITHUB_REPOS',''),
  token             => env_text('GITHUB_TOKEN',''),
  state_file        => env_text('GITHUB_STATE_FILE','/var/lib/irc-gitwatch/state.json'),
  state_backup      => env_bool('STATE_BACKUP_ENABLED',1),
@@ -153,6 +154,17 @@ my %CFG=(
  undernet_register_timeout=>env_int('UNDERNET_REGISTER_TIMEOUT_SECONDS',12,5,60),
 );
 $CFG{hook_path}='/'.$CFG{hook_path} unless $CFG{hook_path}=~m{^/};
+my @REPOS;
+{
+ my%seen;
+ my@names=($CFG{repo},split/,/,$CFG{repos_extra});
+ for my$name(@names){$name=clean_config_text($name);next if$name eq''||$seen{lc$name}++;push@REPOS,{
+  name=>$name,
+  api_url=>"https://api.github.com/repos/$name/events?per_page=100",
+  actions_url=>"https://api.github.com/repos/$name/actions/runs?per_page=$CFG{actions_per_page}",
+  traffic_base=>"https://api.github.com/repos/$name/traffic",
+ }}
+}
 my($repo_owner)=split m{/},$CFG{repo},2;
 $CFG{account}=lc($CFG{account} ne''?$CFG{account}:($repo_owner||''));
 $CFG{api_url}="https://api.github.com/repos/$CFG{repo}/events?per_page=100";
@@ -160,9 +172,22 @@ $CFG{actions_url}="https://api.github.com/repos/$CFG{repo}/actions/runs?per_page
 $CFG{traffic_base}="https://api.github.com/repos/$CFG{repo}/traffic";
 $CFG{account_url}="https://api.github.com/users/$CFG{account}/repos?type=owner&sort=updated&direction=desc&per_page=100";
 
+sub clean_config_text { my($s)=@_;$s//=q{};$s=~s/^\s+|\s+$//g;$s }
+sub repo_key { lc(clean_config_text($_[0]//'')) }
+sub configured_repos { @REPOS }
+sub configured_repo_names { map{$_->{name}}@REPOS }
+sub repo_spec {
+ my($name)=@_;my$wanted=repo_key($name);for my$r(@REPOS){return$r if repo_key($r->{name})eq$wanted}undef;
+}
+sub repo_spec_query {
+ my($name)=@_;$name=clean_config_text($name);return$REPOS[0]if$name eq'';my$exact=repo_spec($name);return$exact if$exact;
+ my@short=grep{my(undef,$n)=split m{/},$_->{name},2;defined$n&&lc($n)eq lc($name)}@REPOS;@short==1?$short[0]:undef;
+}
+
 sub config_errors {
  my @e;
  push @e,'GITHUB_REPO must look like owner/repository' unless $CFG{repo}=~m{^[^/\s]+/[^/\s]+$};
+ for my$r(@REPOS){push@e,"GITHUB_REPOS contains invalid repository '$r->{name}'" unless$r->{name}=~m{^[^/\s]+/[^/\s]+$}}
  push @e,'GITHUB_ACCOUNT must be a valid GitHub username' if $CFG{account_enabled}&&$CFG{account}!~/^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$/;
  push @e,'IRC_CHANNEL must start with #' if $CFG{epiknet_enabled}&&$CFG{irc_channel}!~/^#/;
  push @e,'IRC_NICK must not contain whitespace' if $CFG{epiknet_enabled}&&$CFG{irc_nick}=~/\s/;
@@ -189,7 +214,7 @@ sub config_check { my @e=config_errors(); logmsg('ERROR',$_) for @e; logmsg('INF
 
 # ── Process state ─────────────────────────────────────────────────────────────
 my %STATS=map {($_=>0)} qw(hook_received hook_valid hook_sent hook_dupe hook_invalid hook_suppressed hook_bad_signature hook_bad_content_type hook_missing_headers hook_bad_json hook_wrong_repo hook_read_rejected hook_disabled_requests http_requests http_bad_requests http_chunked_requests http_expect_continue hook_root_alias_hits dashboard_api_requests dashboard_api_errors poll_runs poll_pages poll_gap poll_new poll_sent poll_not_modified poll_errors actions_polls actions_pages actions_gap actions_new actions_sent actions_not_modified actions_errors actions_failures actions_success actions_recoveries actions_enriched actions_enrich_skipped actions_slow_alerts actions_missing_alerts actions_expect_cleared actions_flaky_alerts traffic_cycles traffic_requests traffic_errors traffic_forbidden account_polls account_pages account_not_modified account_errors account_repos_seen account_changes_detected broadcast_enqueued broadcast_completed broadcast_delivery_attempts broadcast_delivery_failures irc_delivery_rejected queue_dropped queue_partial_dropped rate_limit_hits irc_epiknet_sent irc_libera_sent irc_undernet_sent irc_undernet_teuk_sent irc_undernet_miaw_sent irc_epiknet_reconnects irc_libera_reconnects irc_undernet_reconnects irc_heartbeat_pings irc_heartbeat_timeouts irc_join_retries irc_join_rejects http_listener_starts command_throttled state_backups state_recoveries state_save_errors ops_degraded_alerts ops_recovery_alerts rss_polls rss_new rss_sent rss_not_modified rss_unchanged rss_errors);
-my %STATE=(etag=>'',event_seen=>{},deliveries=>{},fingerprints=>{},pending=>[],history=>[],broadcast_seq=>0,broadcast_history=>[],delivery_stats=>{},last_hook_ok=>0,last_hook_event=>'',last_hook_reject_reason=>'',last_hook_reject_at=>0,last_event_text=>'',last_event_source=>'',last_event_at=>0,actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],ci_run_history=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0,account_etag=>'',account_repos=>[],account_history=>{},account_changes=>[],last_account_ok=>0,rss_seen=>{},rss_etag=>'',rss_modified=>'',last_rss_ok=>0,last_rss_title=>'',last_rss_link=>'',rss_id_version=>0,rss_text_version=>0,rss_digest=>'',stats_version=>0,ops_health_key=>'',ops_health_since=>0,ops_health_alerted=>0,ops_degraded_announced=>0);
+my %STATE=(etag=>'',event_seen=>{},deliveries=>{},fingerprints=>{},pending=>[],history=>[],broadcast_seq=>0,broadcast_history=>[],delivery_stats=>{},last_hook_ok=>0,last_hook_event=>'',last_hook_reject_reason=>'',last_hook_reject_at=>0,last_event_text=>'',last_event_source=>'',last_event_at=>0,actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],ci_run_history=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0,repo_state=>{},account_etag=>'',account_repos=>[],account_history=>{},account_changes=>[],last_account_ok=>0,rss_seen=>{},rss_etag=>'',rss_modified=>'',last_rss_ok=>0,last_rss_title=>'',last_rss_link=>'',rss_id_version=>0,rss_text_version=>0,rss_digest=>'',stats_version=>0,ops_health_key=>'',ops_health_since=>0,ops_health_alerted=>0,ops_degraded_announced=>0);
 my %RUN=(
  started=>time, stopping=>0,
  listener=>undef,http_listener_error=>'',http_listener_started=>0,next_http_retry=>0,http_last_at=>0,http_last_method=>'',http_last_path=>'',http_last_status=>0,
@@ -199,7 +224,60 @@ my %RUN=(
  traffic_next=>time+20,traffic_stage=>0,traffic_cycle=>{},traffic_error=>'',traffic_permission=>'waiting',traffic_render_error=>'',
  account_next=>time+35,account_error=>'',account_scan=>undef,
  rss_next=>time+5,rss_error=>'',rss_failures=>0,rss_dirty=>0,maintenance_cursor=>0,state_loaded_from=>'none',state_last_saved=>0,state_last_error=>'',
+ repo_runtime=>{},repo_cursor=>0,
 );
+
+# Repository-local state is swapped into the historical top-level slots while
+# one repository is serviced. This keeps the mature single-repository code
+# small, gives every repository independent cursors/CI/traffic, and leaves a
+# v0.31-compatible primary view at the top level of the state document.
+my@REPO_STATE_KEYS=qw(etag event_seen actions_seen actions_etag last_actions_ok last_action_name last_action_conclusion last_action_url last_action_at ci_bad_state ci_running ci_slow_seen ci_expected ci_sha_seen ci_flap_state ci_enrich_pending ci_run_history traffic_clones traffic_views traffic_referrers traffic_paths traffic_history last_traffic_ok);
+my@REPO_RUN_KEYS=qw(last_api_ok last_api_error poll_min next_poll events_scan actions_next actions_fast_until actions_error actions_auth_mode actions_error_streak actions_scan traffic_next traffic_stage traffic_cycle traffic_error traffic_permission traffic_render_error events_fresh actions_fresh auth_events auth_actions);
+my$ACTIVE_REPO_KEY=repo_key($CFG{repo});
+
+sub blank_repo_state {
+ +{etag=>'',event_seen=>{},actions_seen=>{},actions_etag=>'',last_actions_ok=>0,last_action_name=>'',last_action_conclusion=>'',last_action_url=>'',last_action_at=>0,ci_bad_state=>{},ci_running=>{},ci_slow_seen=>{},ci_expected=>{},ci_sha_seen=>{},ci_flap_state=>{},ci_enrich_pending=>[],ci_run_history=>[],traffic_clones=>{},traffic_views=>{},traffic_referrers=>[],traffic_paths=>[],traffic_history=>{},last_traffic_ok=>0};
+}
+sub blank_repo_runtime {
+ my($offset)=@_;$offset=int($offset||0);+{last_api_ok=>0,last_api_error=>'',poll_min=>60,next_poll=>time+3+$offset,events_scan=>undef,actions_next=>time+10+$offset,actions_fast_until=>0,actions_error=>'',actions_auth_mode=>'unchecked',actions_error_streak=>0,actions_scan=>undef,traffic_next=>time+20+$offset,traffic_stage=>0,traffic_cycle=>{},traffic_error=>'',traffic_permission=>'waiting',traffic_render_error=>'',events_fresh=>1,actions_fresh=>1,auth_events=>'unchecked',auth_actions=>'unchecked'};
+}
+sub repo_state_from {
+ my($src)=@_;my$x=blank_repo_state();return$x unless ref($src)eq'HASH';
+ for my$k(@REPO_STATE_KEYS){next unless exists$src->{$k};my$want=ref($x->{$k});my$got=ref($src->{$k});next if$want ne$got;$x->{$k}=$src->{$k}}
+ $x;
+}
+sub sync_active_repo_context {
+ return unless$ACTIVE_REPO_KEY ne''&&ref($STATE{repo_state})eq'HASH'&&ref($RUN{repo_runtime})eq'HASH';
+ my$s=$STATE{repo_state}{$ACTIVE_REPO_KEY}||=blank_repo_state();my$r=$RUN{repo_runtime}{$ACTIVE_REPO_KEY}||=blank_repo_runtime();
+ $s->{$_}=$STATE{$_} for@REPO_STATE_KEYS;$r->{$_}=$RUN{$_} for@REPO_RUN_KEYS;
+}
+sub load_repo_context {
+ my($spec)=@_;my$key=repo_key($spec->{name});my$s=$STATE{repo_state}{$key}||=blank_repo_state();my$r=$RUN{repo_runtime}{$key}||=blank_repo_runtime();
+ $STATE{$_}=$s->{$_} for@REPO_STATE_KEYS;$RUN{$_}=$r->{$_} for@REPO_RUN_KEYS;
+ $ACTIVE_REPO_KEY=$key;
+ @CFG{qw(repo api_url actions_url traffic_base)}=@$spec{qw(name api_url actions_url traffic_base)};
+}
+sub initialize_repo_contexts {
+ my($saved)=@_;$STATE{repo_state}={}unless ref($STATE{repo_state})eq'HASH';$RUN{repo_runtime}={};
+ my$primary=repo_key($REPOS[0]{name});my$nested=ref($saved)eq'HASH'&&ref($saved->{repo_state})eq'HASH'?$saved->{repo_state}:{};
+ my%persisted=map{(repo_key($_)=>$nested->{$_})}keys%$nested;
+ for my$i(0..$#REPOS){my$r=$REPOS[$i];my$key=repo_key($r->{name});my$src=$persisted{$key};$src={map{($_=>$STATE{$_})}@REPO_STATE_KEYS}if$key eq$primary&&!$src;$STATE{repo_state}{$key}=repo_state_from($src);my$rr=blank_repo_runtime($i*2);$rr->{events_fresh}=keys(%{$STATE{repo_state}{$key}{event_seen}})?0:1;$rr->{actions_fresh}=keys(%{$STATE{repo_state}{$key}{actions_seen}})?0:1;$RUN{repo_runtime}{$key}=$rr}
+ $ACTIVE_REPO_KEY='';load_repo_context($REPOS[0]);
+}
+sub with_repo_context {
+ my($spec,$code)=@_;my$previous=repo_spec($CFG{repo})||$REPOS[0];sync_active_repo_context();load_repo_context($spec);
+ my($result,$ok,$err);$ok=eval{$result=$code->();1};$err=$@;sync_active_repo_context();load_repo_context($previous);die$err unless$ok;$result;
+}
+sub repository_status_rows {
+ sync_active_repo_context();my@rows;
+ for my$r(@REPOS){push@rows,with_repo_context($r,sub{+{name=>$CFG{repo},primary=>repo_key($CFG{repo})eq repo_key($REPOS[0]{name})?1:0,events=>api_state(),actions=>actions_state(),traffic=>traffic_state(),last_events_ok=>int($RUN{last_api_ok}||0),last_actions_ok=>int($STATE{last_actions_ok}||0),last_traffic_ok=>int($STATE{last_traffic_ok}||0),events_error=>clean($RUN{last_api_error}||''),actions_error=>clean($RUN{actions_error}||''),traffic_error=>clean($RUN{traffic_error}||''),ci_failures=>current_ci_failure_count(),ci_running=>current_ci_running_count(),ci_expected=>current_ci_expected_count()}})}
+ @rows;
+}
+sub repository_state_rollup {
+ my($rows,$field)=@_;my@v=map{clean($_->{$field}||'waiting')}@{$rows||[]};return'off'if@v&&scalar(grep{$_ eq'off'}@v)==@v;
+ return'error'if grep{$_ eq'error'}@v;return'limited'if grep{$_ eq'limited'||$_ eq'needs_token'}@v;return'waiting'if grep{$_ eq'waiting'}@v;'online';
+}
+initialize_repo_contexts();
 
 
 my @NETS=(
@@ -752,15 +830,18 @@ sub load_state {
  # target from each loaded queue record. Complete records whose remaining
  # active targets were already acknowledged so a 4-to-3 migration cannot
  # strand an otherwise finished broadcast forever.
+ initialize_repo_contexts($d);
  reconcile_loaded_pending_targets();
 }
 sub save_state {
- prune_state();my$saved=int(time);
+ prune_state();sync_active_repo_context();my$saved=int(time);
+ my%disk=%STATE;my$primary=$STATE{repo_state}{repo_key($REPOS[0]{name})};
+ $disk{$_}=$primary->{$_}for grep{exists$primary->{$_}}@REPO_STATE_KEYS;
  my$tmp="$CFG{state_file}.tmp.$$\.".int(time*1000);
  sysopen(my$fh,$tmp,O_WRONLY|O_CREAT|O_EXCL,0600) or do{$STATS{state_save_errors}++;$RUN{state_last_error}=clean($!);logmsg('WARN',"Cannot create state temp: $!");return 0};
  binmode $fh,':raw';
  my$ok=eval{
-  print{$fh}encode_json({state_version=>11,version=>VERSION,saved_at=>$saved,%STATE,stats=>\%STATS}) or die"write: $!";
+  print{$fh}encode_json({state_version=>11,version=>VERSION,saved_at=>$saved,%disk,stats=>\%STATS}) or die"write: $!";
   $fh->flush or die"flush: $!";my$sync_ok=eval{$fh->sync};logmsg('WARN',"State fsync unavailable: ".clean($@||$!)) if !$sync_ok;
   close$fh or die"close: $!";1
  };
@@ -849,7 +930,7 @@ sub normalize_poll {
 # ── Event display ────────────────────────────────────────────────────────────
 sub state_color { my($s)=@_; $s eq'success'?paint(3,$s):$s=~/^(?:failure|error)$/?paint(4,$s):paint(14,$s||'updated') }
 sub numbered { my($icon,$e,$noun,$color)=@_;my$a=paint(7,bold(irc_content($e->{actor}||'someone')));my$t=irc_short($e->{title},105);$icon.' '.tag().": $a ".paint($color,irc_content($e->{action})||'updated')." $noun ".paint(10,'#'.($e->{number}//'?')).($t?" — $t":'')." — ".clean($e->{url}||"https://github.com/$CFG{repo}") }
-sub format_event {
+sub format_event_body {
  my($e)=@_;my$k=$e->{kind}||'generic';my$a=paint(7,bold(irc_content($e->{actor}||'someone')));my$u=clean($e->{url}||"https://github.com/$CFG{repo}");my$t=irc_short($e->{title},105);my$x=irc_content($e->{action});
  if($k eq'push'){my$n=int($e->{count}||0);my$ref=paint(10,irc_content($e->{ref}||'repository'));my$force=$e->{forced}?' '.paint(4,'[force]'):'';if($n){return icon('push').' '.tag().": $a ".paint(3,'pushed')." $n commit".($n==1?'':'s')." to $ref$force".($t?" — $t":'')." — $u"}my$sha=$e->{sha}?paint(14,substr(clean($e->{sha}),0,7)):'';return icon('push').' '.tag().": $a ".paint(3,'updated')." $ref".($sha?" @ $sha":'')."$force".($t?" — $t":'')." — $u"}
  return numbered(icon('issue'),$e,'issue',3)if$k eq'issue'; if($k eq'issue_comment'){my$e2={%$e,action=>'commented'};return numbered(icon('comment'),$e2,'on issue',3)} return numbered(icon('pr'),$e,'PR',6)if$k eq'pr';
@@ -879,6 +960,10 @@ sub format_event {
  return icon('repo').' '.tag().": $a made ".paint(10,$e->{repo}||$CFG{repo})." public — $u"if$k eq'public';
  return icon('merge').' '.tag().": $a ".paint(6,$x||'updated').' merge group'.($e->{ref}?' '.paint(10,irc_content($e->{ref})):'')." — $u"if$k eq'merge_group';
  icon('generic').' '.tag().": $a triggered ".paint(10,irc_content($t||$k)).($x?" ($x)":'')." — $u";
+}
+sub format_event {
+ my($e)=@_;my$text=format_event_body($e);return$text unless@REPOS>1;
+ my$repo=clean($e->{repo}||$CFG{repo});paint(6,'['.$repo.']').' '.$text;
 }
 
 # ── GitHub REST ──────────────────────────────────────────────────────────────
@@ -947,31 +1032,25 @@ sub auth_check {
  $RUN{auth_login}=$u&&ref$u eq'HASH'?clean($u->{login}//''):'authenticated-user';
  $RUN{auth_login}||='authenticated-user';$RUN{auth_state}='verified';
 
- my$e=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/events?per_page=1",{headers=>api_headers($CFG{token},0)})};
- if(!$e||ref$e ne'HASH'){
-  $RUN{auth_events}='error';$RUN{token}='';$RUN{auth_actions}='public';
-  logmsg('WARN',"GitHub token verified as $RUN{auth_login}, events probe failed; anonymous fallback enabled");return 0
+ $RUN{token}=$CFG{token};my($events_bad,$actions_bad)=(0,0);
+ for my$repo(@REPOS){
+  with_repo_context($repo,sub{
+   my$e=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/events?per_page=1",{headers=>api_headers($CFG{token},0)})};
+   update_rate($e)if$e&&ref($e)eq'HASH';
+   if(!$e||ref($e)ne'HASH'||$e->{status}!=200){$RUN{auth_events}=$e&&ref($e)eq'HASH'?"HTTP $e->{status} $e->{reason}":'error';$events_bad++;logmsg('WARN',"GitHub events probe failed for $CFG{repo}: $RUN{auth_events}")}
+   else{$RUN{auth_events}='ok'}
+   if($CFG{actions_enabled}){
+    my$a=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/actions/runs?per_page=1",{headers=>api_headers($CFG{token},0)})};
+    update_rate($a)if$a&&ref($a)eq'HASH';
+    if($a&&ref($a)eq'HASH'&&$a->{status}==200){$RUN{auth_actions}='ok';$RUN{actions_auth_mode}='authenticated'}
+    else{$RUN{auth_actions}=$a&&ref($a)eq'HASH'?"HTTP $a->{status} $a->{reason}":'error';$RUN{actions_auth_mode}='anonymous-fallback';$actions_bad++;logmsg('WARN',"GitHub Actions probe for $CFG{repo} is $RUN{auth_actions}; public fallback enabled")}
+   }else{$RUN{auth_actions}='off'}
+   1;
+  });
  }
- update_rate($e);
- if($e->{status}!=200){
-  $RUN{auth_events}="HTTP $e->{status} $e->{reason}";$RUN{token}='';$RUN{auth_actions}='public';
-  logmsg('WARN',"GitHub token verified as $RUN{auth_login}, repo events denied; anonymous fallback enabled");return 0
- }
- $RUN{auth_events}='ok';$RUN{token}=$CFG{token};
-
- if($CFG{actions_enabled}){
-  my$a=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/actions/runs?per_page=1",{headers=>api_headers($CFG{token},0)})};
-  if($a&&ref($a)eq'HASH'&&$a->{status}==200){
-   update_rate($a);$RUN{auth_actions}='ok';$RUN{actions_auth_mode}='authenticated';
-  }else{
-   $RUN{auth_actions}=$a&&ref($a)eq'HASH'?"HTTP $a->{status} $a->{reason}":'error';
-   $RUN{actions_auth_mode}='anonymous-fallback';
-   logmsg('WARN',"GitHub token is valid but Actions probe is $RUN{auth_actions}; CI watcher will retry public access");
-  }
- }else{$RUN{auth_actions}='off'}
-
- logmsg('INFO',"GitHub auth: TOKEN VERIFIED — login=$RUN{auth_login} — repo=$CFG{repo} — events=OK — actions=$RUN{auth_actions} — rate=$RUN{rate_remaining}/$RUN{rate_limit}");
- 1;
+ $RUN{auth_events}=$events_bad?'partial':'ok';$RUN{auth_actions}=!$CFG{actions_enabled}?'off':$actions_bad?'partial':'ok';
+ logmsg('INFO',"GitHub auth: TOKEN VERIFIED — login=$RUN{auth_login} — repos=".join(',',configured_repo_names())." — events=$RUN{auth_events} — actions=$RUN{auth_actions} — rate=$RUN{rate_remaining}/$RUN{rate_limit}");
+ $events_bad?0:1;
 }
 
 sub next_link {
@@ -1223,7 +1302,7 @@ sub ci_reliability_summary {
    active_incidents=>scalar@active,resolved_incidents=>scalar@mttr,mttr_seconds=>$mttr,longest_recovery_seconds=>$longest,p50_duration_seconds=>ci_percentile(\@durations,.50),p95_duration_seconds=>ci_percentile(\@durations,.95),green_streak=>$green,
    latest=>{%$last},active=>[map{{%$_}}@active],recent=>[map{{%$_}}@recent],resolved=>[map{{%$_}}@resolved]};
 }
-sub ci_reliability_payload { my$s=ci_reliability_summary();+{%$s,retained_runs=>scalar(@{$STATE{ci_run_history}}),retention=>{days=>MAX_CI_DAYS,max_runs=>MAX_CI_RUNS}} }
+sub ci_reliability_payload { my$s=ci_reliability_summary();+{%$s,repo=>$CFG{repo},retained_runs=>scalar(@{$STATE{ci_run_history}}),retention=>{days=>MAX_CI_DAYS,max_runs=>MAX_CI_RUNS}} }
 sub update_running_ci_event {
  my($e,$allow_slow)=@_;return 0 unless$e&&($e->{kind}||'')eq'ci'&&int($e->{id}||0)>0;
  note_ci_sha_seen($e->{sha});my$cleared=clear_ci_expectation($e->{sha});
@@ -1709,14 +1788,14 @@ sub traffic_audience_summary {
 }
 sub traffic_payload {
  my$s=traffic_summary_data();my$a=traffic_audience_summary();
- +{%$s,error=>$RUN{traffic_error}||'',permission=>$RUN{traffic_permission}||'',daily=>[traffic_daily_rows()],latest=>traffic_latest_snapshot(),history=>traffic_history_summary(),referrers=>[traffic_top('referrers')],paths=>[traffic_top('paths')],audience=>$a,
+ +{%$s,repo=>$CFG{repo},error=>$RUN{traffic_error}||'',permission=>$RUN{traffic_permission}||'',daily=>[traffic_daily_rows()],latest=>traffic_latest_snapshot(),history=>traffic_history_summary(),referrers=>[traffic_top('referrers')],paths=>[traffic_top('paths')],audience=>$a,
   semantics=>{unique_metric=>'GitHub aggregated unique cloners/visitors',raw_ip_addresses_available=>0,window_days=>14,timezone=>'UTC'}};
 }
 sub traffic_num { my($n,$digits)=@_;$digits//=1;my$p=10**$digits;int(($n||0)*$p+.5)/$p }
 sub traffic_check_cli {
  return 3 unless$CFG{traffic_enabled};return 4 if$CFG{token}eq'';
- my%got;for my$k(qw(clones views referrers paths)){my$d=traffic_fetch_stage($k);if(!defined$d){print "GitHub Traffic: ERROR — $RUN{traffic_error}\n";return 2}$got{$k}=$d}
- my$c=$got{clones};my$v=$got{views};print "GitHub Traffic: OK — clones ".int($c->{count}||0)." / unique ".int($c->{uniques}||0)." — views ".int($v->{count}||0)." / unique ".int($v->{uniques}||0)." — referrers ".scalar(@{$got{referrers}})." — paths ".scalar(@{$got{paths}})."\n";0;
+ my%got;for my$k(qw(clones views referrers paths)){my$d=traffic_fetch_stage($k);if(!defined$d){print "GitHub Traffic $CFG{repo}: ERROR — $RUN{traffic_error}\n";return 2}$got{$k}=$d}
+ my$c=$got{clones};my$v=$got{views};print "GitHub Traffic $CFG{repo}: OK — clones ".int($c->{count}||0)." / unique ".int($c->{uniques}||0)." — views ".int($v->{count}||0)." / unique ".int($v->{uniques}||0)." — referrers ".scalar(@{$got{referrers}})." — paths ".scalar(@{$got{paths}})."\n";0;
 }
 
 # ── Forum RSS ────────────────────────────────────────────────────────────────
@@ -2244,9 +2323,9 @@ sub command {
  my$cmd=lc($1//'help');my$arg=clean($2//'');my$r=lc($to)eq lc($net->{nick})?$from:$to;my$s=sep();
 
  if($cmd eq'status'){
-  my($as,$cs,$rs,$hs,$ts)=(api_state(),actions_state(),rss_state(),webhook_state(),traffic_state());
+  my@repo_status=repository_status_rows();my($as,$cs,$rs,$hs,$ts)=(repository_state_rollup(\@repo_status,'events'),repository_state_rollup(\@repo_status,'actions'),rss_state(),webhook_state(),repository_state_rollup(\@repo_status,'traffic'));
   my$q=@{$STATE{pending}}?paint(8,scalar(@{$STATE{pending}}).' queued'):paint(3,'queue clear');
-  irc_msg($net,$r,icon('github').' '.tag().'Watch '.paint(10,'v'.VERSION).$s.paint(6,$CFG{repo}).$s.
+  irc_msg($net,$r,icon('github').' '.tag().'Watch '.paint(10,'v'.VERSION).$s.paint(6,scalar(@REPOS).' repositories').$s.
    $NET{epiknet}{label}.' '.paint(!$NET{epiknet}{enabled}?14:$NET{epiknet}{up}?3:4,!$NET{epiknet}{enabled}?'DISABLED':$NET{epiknet}{up}?'ON':'OFF').$s.
    ($NET{libera}{enabled}?$NET{libera}{label}.' '.paint($NET{libera}{up}?3:4,$NET{libera}{up}?'ON':'OFF').$s:'').
    ($NET{undernet}{enabled}?$NET{undernet}{label}.' '.paint($NET{undernet}{up}?3:4,$NET{undernet}{up}?'ON':'OFF').$s:'').
@@ -2652,13 +2731,15 @@ sub command {
   my$flags=join(', ',grep{length}($p->{archived}?'archived':'',$p->{fork}?'fork':'',$p->{disabled}?'disabled':''));$flags||='maintained';
   irc_msg($net,$r,icon('repo').' '.paint(11,bold($p->{full_name})).$s.paint(10,$flags).$s.'stars '.int($p->{stars}||0).$s.'forks '.int($p->{forks}||0).$s.'issues '.int($p->{open_issues}||0).$s.($p->{language}?$p->{language}.$s:'').'last push '.paint(14,iso8601_epoch($p->{pushed_at})?age(iso8601_epoch($p->{pushed_at})):'never').$s.$p->{html_url});return
  }
- if($cmd eq'repo'){irc_msg($net,$r,icon('repo').' '.paint(11,bold('Repository')).$s.paint(10,$CFG{repo}).$s."https://github.com/$CFG{repo}");return}
+ if($cmd eq'repo'||$cmd eq'watch'){
+  irc_msg($net,$r,icon('repo').' '.paint(11,bold('Watched repositories')).$s.join($s,map{paint(10,$_->{name}).(repo_key($_->{name})eq repo_key($REPOS[0]{name})?' '.paint(14,'[primary]'):'')}@REPOS));return
+ }
  if($cmd eq'help'){
   irc_msg($net,$r,icon('github').' '.paint(11,bold(APP_NAME.' · overview')).$s.join(' ',map{paint(10,$_)}qw(pulse now today summary status health problems dashboard recent last)));
   irc_msg($net,$r,icon('ci').' '.paint(11,bold('CI / delivery')).$s.join(' ',map{paint(10,$_)}qw(ci reliability slo incidents failures flaky running expected broadcast queue networks schedule)));
   irc_msg($net,$r,icon('stats').' '.paint(11,bold('Traffic')).$s.join(' ',map{paint(10,$_)}qw(snapshot lateststats clones traffic audience uniques trend week compare peaks history top referrers paths)));
   irc_msg($net,$r,icon('repo').' '.paint(11,bold($CFG{account}.' portfolio')).$s.join(' ',map{paint(10,$_)}qw(portfolio repos stars stale changes)).' '.paint(10,'project <name>'));
-  irc_msg($net,$r,icon('shield').' '.paint(11,bold('Diagnostics')).$s.join(' ',map{paint(10,$_)}qw(freshness stats webhook auth rate state alerts endpoints icons events repo)));
+  irc_msg($net,$r,icon('shield').' '.paint(11,bold('Diagnostics')).$s.join(' ',map{paint(10,$_)}qw(freshness stats webhook auth rate state alerts endpoints icons events repo watch)));
   return
  }
  irc_msg($net,$r,icon('generic').' '.paint(4,"Unknown '$cmd'").$s.'try '.paint(10,'!github help'));
@@ -2667,6 +2748,7 @@ sub startup_announce {
  my($net)=@_;return unless$net&&$CFG{startup_announce}&&$net->{up};
  my$auth=$RUN{auth_state}eq'verified'&&$RUN{auth_events}eq'ok'?paint(3,'TOKEN VERIFIED').' '.paint(10,$RUN{auth_login}):$RUN{auth_state}eq'rejected'?paint(4,'TOKEN REJECTED').' '.paint(8,'anonymous fallback'):paint(8,auth_short());
  my$msg=icon('auth').' '.paint(11,bold(APP_NAME.' v'.VERSION)).sep().$auth.sep().
+  icon('repo').' '.paint(10,scalar(@REPOS).' repositories').sep().
   icon('ci').' CI '.($CFG{actions_enabled}?paint(10,'watching failures'):paint(14,'off')).sep().
   icon('webhook').' '.($CFG{hook_secret}ne''?paint(8,'webhook listening'):paint(14,'webhook POST disabled')).sep().
   icon('forum').' RSS '.($CFG{rss_enabled}?paint(10,$CFG{rss_interval}.'s'):paint(14,'off')).sep().
@@ -2729,8 +2811,10 @@ sub health_report {
  }
  push@issues,"required IRC target $_ is not configured" for missing_required_targets();
  push@issues,'HTTP listener down' unless$RUN{listener};
- my$a=api_state();push@issues,"Events API $a" if$CFG{poll_enabled}&&$a=~/^(?:error|limited)$/;
- my$c=actions_state();push@issues,"Actions $c" if$CFG{actions_enabled}&&$c=~/^(?:error|limited)$/;
+ for my$x(repository_status_rows()){
+  push@issues,"$x->{name} Events API $x->{events}"if$CFG{poll_enabled}&&$x->{events}=~/^(?:error|limited)$/;
+  push@issues,"$x->{name} Actions $x->{actions}"if$CFG{actions_enabled}&&$x->{actions}=~/^(?:error|limited)$/;
+ }
  my$r=rss_state();push@issues,"RSS $r" if$CFG{rss_enabled}&&$r eq'error';
  push@issues,'queue high '.scalar(@{$STATE{pending}}).'/'.MAX_PENDING if@{$STATE{pending}}>=$CFG{health_queue_warn};
  +{status=>@issues?'degraded':'ok',issues=>\@issues};
@@ -2815,13 +2899,92 @@ let inFlight=false;
 let timer=null;
 let failures=0;
 let lastSuccess=0;
+let selectedRepo=$('repo-select')?.value||'';
+let requestEpoch=0;
+let activeController=null;
 
-const endpoint=()=>{
+const endpoint=repo=>{
   const u=new URL(window.location.href);
-  u.search='?api=dashboard';
+  u.search='';
+  u.searchParams.set('api','dashboard');
+  if(repo)u.searchParams.set('repo',repo);
   u.hash='';
   return u.toString();
 };
+const repositoryPath=repo=>{
+  const parts=String(repo||'').split('/');
+  return parts.length===2&&parts.every(Boolean)?`/repo/${parts.map(encodeURIComponent).join('/')}`:'/';
+};
+const repositoryFromLocation=()=>{
+  const parts=window.location.pathname.split('/').filter(Boolean);
+  if(parts.length===3&&parts[0]==='repo'){
+    try{return `${decodeURIComponent(parts[1])}/${decodeURIComponent(parts[2])}`}catch(_){return''}
+  }
+  return new URL(window.location.href).searchParams.get('repo')||'';
+};
+const configuredRepository=repo=>{
+  const options=Array.from($('repo-select')?.options||[]);
+  return options.find(x=>x.value.toLowerCase()===String(repo||'').toLowerCase())?.value||'';
+};
+const repositorySignal=row=>{
+  if(!row)return{state:'warn',text:'collecting repository state'};
+  const signals=[row.events,row.actions,row.traffic].map(x=>String(x||'waiting').toLowerCase());
+  const active=signals.filter(x=>!['off','disabled'].includes(x));
+  const state=active.some(x=>['error','offline','bad'].includes(x))?'bad':
+    active.some(x=>!['online','live','ok','ready','stable'].includes(x))?'warn':active.length?'ok':'off';
+  return{state,text:`Events ${upper(row.events||'waiting')} · CI ${upper(row.actions||'waiting')} · Traffic ${upper(row.traffic||'waiting')}`};
+};
+function syncRepositoryControls(d,wanted){
+  const repos=Array.isArray(d.repos)?d.repos.filter(x=>typeof x==='string'&&x.includes('/')):[];
+  const rows=Array.isArray(d.repositories)?d.repositories:[];
+  const tablist=$('repo-tabs');
+  if(tablist){
+    const current=Array.from(tablist.querySelectorAll('.repo-tab')).map(x=>x.dataset.repo||'');
+    if(current.length!==repos.length||repos.some((x,i)=>x!==current[i])){
+      tablist.replaceChildren(...repos.map(repo=>{
+        const parts=repo.split('/'),button=document.createElement('button');
+        button.type='button';button.className='repo-tab';button.dataset.repo=repo;
+        const dot=document.createElement('i');dot.className='repo-tab-dot';dot.setAttribute('aria-hidden','true');
+        const label=document.createElement('span');label.className='repo-tab-label';label.textContent=parts.slice(1).join('/')||repo;
+        const owner=document.createElement('small');owner.textContent=parts[0]||'';
+        button.append(dot,label,owner);
+        if(repo.toLowerCase()===String(d.primary_repo||d.repo||'').toLowerCase()){
+          const primary=document.createElement('b');primary.className='repo-primary-mark';primary.textContent='PRIMARY';button.append(primary);
+        }
+        return button;
+      }));
+    }
+    Array.from(tablist.querySelectorAll('.repo-tab')).forEach(button=>{
+      const active=button.dataset.repo.toLowerCase()===String(wanted||'').toLowerCase();
+      const row=rows.find(x=>String(x.name||'').toLowerCase()===button.dataset.repo.toLowerCase());
+      const signal=repositorySignal(row),dot=button.querySelector('.repo-tab-dot');
+      button.classList.toggle('active',active);button.setAttribute('aria-pressed',active?'true':'false');
+      button.title=`${button.dataset.repo} · ${signal.text}`;
+      if(dot)dot.className=`repo-tab-dot ${signal.state}`;
+    });
+  }
+  const selectedRow=rows.find(x=>String(x.name||'').toLowerCase()===String(wanted||'').toLowerCase());
+  const signal=repositorySignal(selectedRow),dot=$('repo-context-dot');
+  if(dot)dot.className=`repo-context-dot ${signal.state}`;
+  txt('repo-context-health',signal.text);
+  const index=Math.max(0,repos.findIndex(x=>x.toLowerCase()===String(wanted||'').toLowerCase()));
+  txt('repo-count',`${repos.length} watched · ${repos.length?index+1:0}/${repos.length}`);
+  const permalink=$('repo-permalink');if(permalink)permalink.href=repositoryPath(wanted);
+}
+function syncRepositorySelector(d){
+  const select=$('repo-select');if(!select)return;
+  const repos=Array.isArray(d.repos)?d.repos.filter(x=>typeof x==='string'&&x.includes('/')):[];
+  const current=Array.from(select.options).map(x=>x.value);
+  if(repos.length&&(current.length!==repos.length||repos.some((x,i)=>x!==current[i]))){
+    select.replaceChildren(...repos.map(repo=>{const option=document.createElement('option');option.value=repo;option.textContent=repo;return option}));
+  }
+  const wanted=configuredRepository(d.selected_repo||d.repo||selectedRepo)||select.options[0]?.value||'';
+  selectedRepo=wanted;select.value=wanted;
+  syncRepositoryControls(d,wanted);
+  txt('traffic-repo',wanted);txt('ci-repo',wanted);
+  const link=$('repo-link');if(link)link.href=`https://github.com/${wanted.split('/').map(encodeURIComponent).join('/')}`;
+  document.title=`IRC GitWatch ${d.version||'?'} · ${wanted}`;
+}
 
 const setLive=(state,detail)=>{
   const el=$('live-badge');if(!el)return;
@@ -3031,7 +3194,7 @@ function render(d){
   timeoutMs=Math.max(1000,num(cfg.timeout_seconds||4)*1000);
 
   txt('version-badge',`v${d.version||'?'}`);
-  txt('repo-name',d.repo||'');
+  syncRepositorySelector(d);
 
   const health=d.health?.status||'degraded';const hb=$('health-badge'),ht=$('health-text');if(hb){hb.className=health==='ok'?'ok':'warn';hb.textContent='●'}if(ht)ht.textContent=`HEALTH ${upper(health)}`
 
@@ -3047,6 +3210,7 @@ function render(d){
   renderTraffic(d);
   renderActivity(d);
 
+  document.body.classList.remove('repo-switching');
   lastSuccess=Date.now();
   setLive('ok','LIVE · updated now');
 }
@@ -3063,13 +3227,16 @@ async function refresh(){
   if(inFlight){schedule();return}
   if(!navigator.onLine){setLive('warn','OFFLINE · waiting for network');schedule();return}
 
+  const epoch=++requestEpoch;
+  const requestedRepo=selectedRepo;
   inFlight=true;
   setLive('sync','LIVE · syncing…');
   const ctl=new AbortController();
+  activeController=ctl;
   const killer=setTimeout(()=>ctl.abort(),timeoutMs);
 
   try{
-    const res=await fetch(endpoint(),{
+    const res=await fetch(endpoint(requestedRepo),{
       headers:{Accept:'application/json'},
       cache:'no-store',
       credentials:'same-origin',
@@ -3077,20 +3244,50 @@ async function refresh(){
     });
     if(!res.ok)throw new Error(`HTTP ${res.status}`);
     const data=await res.json();
+    if(epoch!==requestEpoch||requestedRepo!==selectedRepo)return;
+    if(String(data.selected_repo||data.repo||'').toLowerCase()!==requestedRepo.toLowerCase())throw new Error('repository mismatch');
     failures=0;
     requestAnimationFrame(()=>render(data));
   }catch(err){
+    if(epoch!==requestEpoch)return;
     failures++;
     const stale=lastSuccess?` · last good ${Math.floor((Date.now()-lastSuccess)/1000)}s ago`:'';
     setLive('bad',`STALE · ${err.name==='AbortError'?'timeout':err.message}${stale}`);
   }finally{
     clearTimeout(killer);
-    inFlight=false;
-    schedule();
+    if(epoch===requestEpoch){activeController=null;inFlight=false;schedule()}
   }
 }
 
+function activateRepository(repo,push){
+  const wanted=configuredRepository(repo)||$('repo-select')?.options[0]?.value||'';
+  if(!wanted)return;
+  const changed=wanted.toLowerCase()!==selectedRepo.toLowerCase();
+  selectedRepo=wanted;
+  const select=$('repo-select');if(select)select.value=wanted;
+  document.querySelectorAll('.repo-tab').forEach(button=>{
+    const active=String(button.dataset.repo||'').toLowerCase()===wanted.toLowerCase();
+    button.classList.toggle('active',active);button.setAttribute('aria-pressed',active?'true':'false');
+  });
+  const options=Array.from(select?.options||[]),index=Math.max(0,options.findIndex(x=>x.value.toLowerCase()===wanted.toLowerCase()));
+  txt('repo-count',`${options.length} watched · ${options.length?index+1:0}/${options.length}`);
+  const permalink=$('repo-permalink');if(permalink)permalink.href=repositoryPath(wanted);
+  const link=$('repo-link');if(link)link.href=`https://github.com/${wanted.split('/').map(encodeURIComponent).join('/')}`;
+  if(push&&changed)history.pushState({repo:wanted},'',repositoryPath(wanted));
+  requestEpoch++;
+  if(activeController)activeController.abort();
+  activeController=null;inFlight=false;lastDashboard=null;clearTimeout(timer);
+  document.body.classList.add('repo-switching');
+  txt('traffic-repo',wanted);txt('ci-repo',wanted);
+  txt('repo-context-health','Loading repository context…');
+  setLive('sync',`LIVE · loading ${wanted}…`);
+  refresh();
+}
+
 document.addEventListener('click',ev=>{const btn=ev.target.closest('.range-btn');if(!btn)return;chartRange=Math.max(1,num(btn.dataset.range||14));document.querySelectorAll('.range-btn').forEach(x=>x.classList.toggle('active',x===btn));if(lastDashboard){renderChart(lastDashboard);renderUniqueChart(lastDashboard)}});
+const repoSelect=$('repo-select');if(repoSelect)repoSelect.addEventListener('change',()=>activateRepository(repoSelect.value,true));
+const repoTabs=$('repo-tabs');if(repoTabs)repoTabs.addEventListener('click',ev=>{const button=ev.target.closest('.repo-tab');if(button)activateRepository(button.dataset.repo,true)});
+window.addEventListener('popstate',()=>activateRepository(repositoryFromLocation(),false));
 document.addEventListener('visibilitychange',()=>{
   clearTimeout(timer);
   if(document.hidden)schedule();else refresh();
@@ -3111,6 +3308,21 @@ sub dashboard_html {
  my$auth=auth_short();my$auth_class=$auth eq'TOKEN OK'?'ok':$auth eq'TOKEN BAD'||$auth eq'AUTH ERROR'?'bad':'warn';
 
  my$repo=html_escape($CFG{repo});my$ver=html_escape(VERSION);my$app=html_escape(APP_NAME);my$account_name=html_escape($CFG{account});my$up=html_escape(uptime());
+ my@repo_switch_rows=repository_status_rows();
+ my$repo_options=join('',map{my$name=$_->{name};'<option value="'.html_escape($name).'"'.(repo_key($name)eq repo_key($CFG{repo})?' selected':'').'>'.html_escape($name).'</option>'}@REPOS);
+ my$repo_tabs=join('',map{
+  my$row=$_;my($owner,$name)=split(m{/},$row->{name},2);my@signals=grep{$_ ne'off'}map{clean($row->{$_}||'waiting')}qw(events actions traffic);
+  my$state=!@signals?'off':grep({$_ eq'error'||$_ eq'offline'}@signals)?'bad':grep({$_ ne'online'}@signals)?'warn':'ok';
+  my$active=repo_key($row->{name})eq repo_key($CFG{repo});my$primary=$row->{primary}?'<b class="repo-primary-mark">PRIMARY</b>':'';
+  '<button type="button" class="repo-tab'.($active?' active':'').'" data-repo="'.html_escape($row->{name}).'" aria-pressed="'.($active?'true':'false').'" title="'.html_escape($row->{name}).'"><i class="repo-tab-dot '.$state.'" aria-hidden="true"></i><span class="repo-tab-label">'.html_escape($name).'</span><small>'.html_escape($owner).'</small>'.$primary.'</button>'
+ }@repo_switch_rows);
+ my($selected_repo_row)=grep{repo_key($_->{name})eq repo_key($CFG{repo})}@repo_switch_rows;$selected_repo_row||=$repo_switch_rows[0]||{};
+ my@selected_signals=grep{$_ ne'off'}map{clean($selected_repo_row->{$_}||'waiting')}qw(events actions traffic);
+ my$repo_context_state=!@selected_signals?'off':grep({$_ eq'error'||$_ eq'offline'}@selected_signals)?'bad':grep({$_ ne'online'}@selected_signals)?'warn':'ok';
+ my$repo_context_health=html_escape('Events '.uc($selected_repo_row->{events}||'waiting').' · CI '.uc($selected_repo_row->{actions}||'waiting').' · Traffic '.uc($selected_repo_row->{traffic}||'waiting'));
+ my$repo_count=scalar(@REPOS);my($repo_index)=grep{repo_key($REPOS[$_]{name})eq repo_key($CFG{repo})}0..$#REPOS;$repo_index=0 unless defined$repo_index;
+ my$repo_github_url=html_escape('https://github.com/'.$CFG{repo});
+ my$repo_permalink=html_escape('/repo/'.join('/',map{http_url_encode($_)}split(m{/},$CFG{repo},2)));
  my$q=scalar@{$STATE{pending}};my$qclass=$q?'warn':'ok';
  my$epi=!$NET{epiknet}{enabled}?'OFF':$NET{epiknet}{up}?'ONLINE':'OFFLINE';my$epi_class=!$NET{epiknet}{enabled}?'off':$NET{epiknet}{up}?'ok':'bad';
  my$lib=!$NET{libera}{enabled}?'OFF':$NET{libera}{up}?'ONLINE':'OFFLINE';my$lib_class=!$NET{libera}{enabled}?'off':$NET{libera}{up}?'ok':'bad';
@@ -3208,8 +3420,10 @@ sub dashboard_html {
 :root{color-scheme:dark;--bg:#0b0c0e;--panel:#111217;--panel2:#0e1014;--line:#24262d;--line2:#333640;--text:#e9edf2;--muted:#8d95a3;--muted2:#6f7784;--ok:#73bf69;--warn:#f2cc0c;--bad:#f2495c;--accent:#5794f2;--accent2:#73a5f5;--cyan:#56d2c9}
 *{box-sizing:border-box}html{min-height:100%;scroll-behavior:smooth}body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font:14px/1.45 Inter,system-ui,-apple-system,Segoe UI,sans-serif}
 body:before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,.012) 50%,transparent 100%)}
-main{position:relative;z-index:1;max-width:1360px;margin:0 auto 40px;padding:0 18px}.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 -18px 12px;padding:10px 18px;background:rgba(11,12,14,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}
+main{position:relative;z-index:1;max-width:1360px;margin:0 auto 40px;padding:0 18px}.top{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px 16px;margin:0 -18px 12px;padding:10px 18px;background:rgba(11,12,14,.94);border-bottom:1px solid var(--line);backdrop-filter:blur(12px)}
 h1{font-size:20px;font-weight:650;letter-spacing:-.02em;margin:0}.repo{color:#aab4c0;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:11px;margin-top:1px}
+.repo-switcher{display:flex;align-items:center;gap:6px;margin-top:3px}.repo-switcher label{color:var(--muted2);font:700 9px/1.2 Inter,system-ui,sans-serif;letter-spacing:.08em;text-transform:uppercase}.repo-select{max-width:310px;border:1px solid var(--line);border-radius:3px;background:#0f1115;color:#cfd7e1;padding:3px 24px 3px 7px;font:600 11px/1.25 ui-monospace,SFMono-Regular,Consolas,monospace;cursor:pointer}.repo-select:hover,.repo-select:focus{border-color:#3e6caa;outline:none}.repo-link{font-size:10px;white-space:nowrap}.panel-repo{color:var(--accent2);font:600 10px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace}
+.repo-rail{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:1 0 100%;min-width:0;padding-top:8px;border-top:1px solid rgba(255,255,255,.055)}.repo-tabs{display:flex;align-items:stretch;gap:5px;min-width:0;overflow-x:auto;scrollbar-width:thin;padding-bottom:1px}.repo-tab{appearance:none;display:grid;grid-template-columns:auto auto;grid-template-rows:auto auto;column-gap:7px;align-items:center;min-width:142px;border:1px solid var(--line);border-radius:6px;background:#0f1115;color:var(--muted);padding:7px 9px;text-align:left;cursor:pointer;transition:border-color .12s ease,background .12s ease,color .12s ease}.repo-tab:hover{border-color:var(--line2);color:var(--text)}.repo-tab.active{border-color:#3e6caa;background:#151d2a;color:var(--text);box-shadow:inset 0 -2px 0 var(--accent)}.repo-tab-dot{grid-row:1/3;width:7px;height:7px;border-radius:50%;background:var(--muted2)}.repo-tab-dot.ok,.repo-context-dot.ok{background:var(--ok)}.repo-tab-dot.warn,.repo-context-dot.warn{background:var(--warn)}.repo-tab-dot.bad,.repo-context-dot.bad{background:var(--bad)}.repo-tab-label{font:700 11px/1.2 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:nowrap}.repo-tab small{grid-column:2;color:var(--muted2);font-size:9px;line-height:1.2}.repo-primary-mark{grid-column:3;grid-row:1/3;align-self:center;color:var(--accent2);font-size:7px;letter-spacing:.08em}.repo-context{display:flex;align-items:center;justify-content:flex-end;gap:8px;color:var(--muted);font-size:9px;white-space:nowrap}.repo-context-state{display:flex;align-items:center;gap:6px}.repo-context-dot{width:7px;height:7px;border-radius:50%;background:var(--muted2)}.repo-permalink{padding-left:8px;border-left:1px solid var(--line)}.repo-switching .repo-scope,.repo-switching .stat-row,.repo-switching .dashboard-row,.repo-switching .audience-strip,.repo-switching .ci-reliability-panel{opacity:.48}.repo-scope,.stat-row,.dashboard-row,.audience-strip,.ci-reliability-panel{transition:opacity .15s ease}
 .badge{border:1px solid var(--line);border-radius:999px;padding:5px 9px;color:var(--muted);white-space:nowrap;background:#10151c}
 .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:8px}.card{background:var(--panel);border:1px solid var(--line);border-radius:4px;padding:12px;box-shadow:none;transition:border-color .12s ease,background .12s ease}.card:hover{border-color:var(--line2);background:#13141a}
 .label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:8px}.value{font-weight:700;font-size:17px}
@@ -3252,7 +3466,8 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}foo
 .hero-trends{display:flex;gap:8px;align-items:center;margin-top:9px}.trend-chip{display:inline-flex;align-items:center;gap:5px;color:var(--muted);font-size:10px;border-top:1px solid var(--line);padding-top:7px;min-width:0}.trend-chip b{color:#cbd5df;font-weight:700}.trend-up{color:var(--ok)!important}.trend-down{color:var(--warn)!important}.hero-spark{height:28px;display:flex;align-items:flex-end;gap:2px;margin-left:auto;min-width:160px;max-width:260px;flex:1}.hero-spark i{display:block;flex:1;min-width:2px;background:#3c5367;border-radius:2px 2px 0 0;opacity:.82}
 details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#a8b3c0;font-size:11px;text-transform:uppercase;letter-spacing:.09em;font-weight:800}details.card>summary::-webkit-details-marker{display:none}details.card>summary:after{content:"＋";font-size:14px;color:var(--muted)}details.card[open]>summary:after{content:"−"}details.card[open]>summary{margin-bottom:12px}.details-note{color:var(--muted);font-size:10px;text-transform:none;letter-spacing:0;font-weight:500}
 \@media(max-width:900px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}.dashboard-row,.lower-grid{grid-template-columns:1fr}.chart-panel,.unique-chart-panel{min-height:275px}.pulse-strip,.ci-reliability-grid{grid-template-columns:repeat(3,minmax(0,1fr))}.audience-strip,.account-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.pulse-panel{min-height:auto}}
-\@media(max-width:560px){.stat-row{grid-template-columns:1fr 1fr}.stat-panel .stat-value{font-size:24px}.top{align-items:flex-start}.toolbar-right{justify-content:flex-start}.chart-wrap,.unique-chart-panel .chart-wrap{height:205px}.pulse-strip,.ci-reliability-grid,.audience-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.audit-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+\@media(max-width:760px){.repo-rail{align-items:flex-start;flex-direction:column}.repo-tabs{width:100%}.repo-context{justify-content:flex-start;white-space:normal}.repo-tab{min-width:132px}}
+\@media(max-width:560px){.stat-row{grid-template-columns:1fr 1fr}.stat-panel .stat-value{font-size:24px}.top{align-items:flex-start;flex-direction:column}.toolbar-right{justify-content:flex-start}.repo-switcher{flex-wrap:wrap}.repo-select{max-width:min(78vw,310px)}.chart-wrap,.unique-chart-panel .chart-wrap{height:205px}.pulse-strip,.ci-reliability-grid,.audience-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.audit-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
 \@media(max-width:900px){.hero-metrics,.ops-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.essential-strip{align-items:flex-start;flex-direction:column}.essential-note{white-space:normal}}
 \@media(max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.stats,.traffic-kpis,.broadcast-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 \@media(max-width:520px){.grid,.stats,.traffic-kpis,.traffic-columns,.broadcast-grid,.hero-metrics,.ops-grid,.account-kpis{grid-template-columns:1fr}.full{grid-column:1}.hero{padding:15px}.top{align-items:flex-start}.hero-head{flex-direction:column}.essential-strip{padding:9px}}
@@ -3260,8 +3475,9 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
 </head>
 <body><main>
 <div class="top">
- <div class="toolbar-left"><div class="toolbar-mark">G</div><div class="toolbar-title"><h1>$app <span class="badge" id="version-badge">v$ver</span></h1><div class="repo" id="repo-name">$repo</div></div></div>
- <div class="toolbar-right"><span class="toolbar-chip"><span id="health-badge" class="$health_class">●</span><strong id="health-text">HEALTH $health_txt</strong></span><span class="toolbar-chip"><span class="live-dot"></span><strong id="live-badge">LIVE · connecting…</strong></span><span class="toolbar-chip">Latest <strong id="toolbar-latest-traffic">$latest_traffic->{clones} clones · $latest_traffic->{clone_uniques} unique</strong></span><span class="toolbar-chip">Audience <strong id="toolbar-audience">$audience->{clone_uniques} cloners · $audience->{view_uniques} visitors</strong></span><span class="toolbar-chip">UTC · rolling 14d</span></div>
+ <div class="toolbar-left"><div class="toolbar-mark">G</div><div class="toolbar-title"><h1>$app <span class="badge" id="version-badge">v$ver</span></h1><div class="repo-switcher"><label for="repo-select">Repository</label><select class="repo-select" id="repo-select" aria-label="Displayed GitHub repository">$repo_options</select><a class="repo-link" id="repo-link" href="$repo_github_url" rel="noopener noreferrer">GitHub ↗</a></div></div></div>
+ <div class="toolbar-right"><span class="toolbar-chip"><span id="health-badge" class="$health_class">●</span><strong id="health-text">HEALTH $health_txt</strong></span><span class="toolbar-chip"><span class="live-dot"></span><strong id="live-badge">LIVE · connecting…</strong></span><span class="toolbar-chip repo-scope">Latest <strong id="toolbar-latest-traffic">$latest_traffic->{clones} clones · $latest_traffic->{clone_uniques} unique</strong></span><span class="toolbar-chip repo-scope">Audience <strong id="toolbar-audience">$audience->{clone_uniques} cloners · $audience->{view_uniques} visitors</strong></span><span class="toolbar-chip">UTC · rolling 14d</span></div>
+ <div class="repo-rail"><nav class="repo-tabs" id="repo-tabs" aria-label="Watched repositories">$repo_tabs</nav><div class="repo-context"><span id="repo-count">$repo_count watched · @{[$repo_index+1]}/$repo_count</span><span class="repo-context-state"><i class="repo-context-dot $repo_context_state" id="repo-context-dot" aria-hidden="true"></i><span id="repo-context-health" aria-live="polite">$repo_context_health</span></span><a class="repo-permalink" id="repo-permalink" href="$repo_permalink">Permalink</a></div></div>
 </div>
 
 <div class="stat-row">
@@ -3272,7 +3488,7 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
 </div>
 
 <div class="dashboard-row">
- <section class="card chart-panel"><div class="panel-title"><span>Repository traffic</span><div class="panel-toolbar"><button class="range-btn" data-range="7">7d</button><button class="range-btn active" data-range="14">14d</button><button class="range-btn" data-range="30">30d</button><button class="range-btn" data-range="90">90d</button></div></div><div class="chart-wrap"><svg id="traffic-chart" class="chart-svg" role="img" aria-label="GitHub clones and views over time"></svg><div id="chart-tooltip" class="tooltip"></div></div><div class="chart-legend"><span><i class="legend-blue"></i>Clones</span><span><i class="legend-cyan"></i>Views</span><span id="chart-updated">updated $hero_traffic_age · $traffic_history->{days}d retained</span></div></section>
+ <section class="card chart-panel"><div class="panel-title"><span>Repository traffic · <b class="panel-repo" id="traffic-repo">$repo</b></span><div class="panel-toolbar"><button class="range-btn" data-range="7">7d</button><button class="range-btn active" data-range="14">14d</button><button class="range-btn" data-range="30">30d</button><button class="range-btn" data-range="90">90d</button></div></div><div class="chart-wrap"><svg id="traffic-chart" class="chart-svg" role="img" aria-label="GitHub clones and views over time"></svg><div id="chart-tooltip" class="tooltip"></div></div><div class="chart-legend"><span><i class="legend-blue"></i>Clones</span><span><i class="legend-cyan"></i>Views</span><span id="chart-updated">updated $hero_traffic_age · $traffic_history->{days}d retained</span></div></section>
  <section class="card unique-chart-panel"><div class="panel-title"><span>Unique audience</span><small id="unique-chart-range">14d daily curve</small></div><div class="chart-wrap"><svg id="unique-chart" class="chart-svg" role="img" aria-label="Daily unique cloners and unique visitors"></svg><div id="unique-chart-tooltip" class="tooltip"></div></div><div class="chart-legend"><span><i class="legend-unique-cloners"></i>Unique cloners</span><span><i class="legend-unique-visitors"></i>Unique visitors</span></div><div class="unique-chart-note">GitHub aggregates unique cloners and visitors; raw IP addresses are not exposed.</div></section>
 </div>
 
@@ -3285,15 +3501,15 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
 
 <div class="pulse-strip">
  <div class="pulse-cell"><span class="pulse-label">Webhook</span><span class="pulse-value $hook_class" id="pulse-webhook">$hook</span></div>
- <div class="pulse-cell"><span class="pulse-label">CI</span><span class="pulse-value $ci_class" id="pulse-ci">$ci</span></div>
+ <div class="pulse-cell repo-scope"><span class="pulse-label">CI</span><span class="pulse-value $ci_class" id="pulse-ci">$ci</span></div>
  <div class="pulse-cell"><span class="pulse-label">Fan-out</span><span class="pulse-value" id="pulse-fanout">$hero_fanout_joined/$hero_fanout_total</span></div>
  <div class="pulse-cell"><span class="pulse-label">Queue</span><span class="pulse-value" id="pulse-queue">$q</span></div>
- <div class="pulse-cell"><span class="pulse-label">Latest traffic</span><span class="pulse-value" id="pulse-today">$latest_traffic->{clones} clones · $latest_traffic->{clone_uniques} unique</span></div>
+ <div class="pulse-cell repo-scope"><span class="pulse-label">Latest traffic</span><span class="pulse-value" id="pulse-today">$latest_traffic->{clones} clones · $latest_traffic->{clone_uniques} unique</span></div>
  <div class="pulse-cell"><span class="pulse-label">Latest</span><span class="pulse-value" id="pulse-latest">$last_age</span></div>
 </div>
 
 <section class="card ci-reliability-panel">
- <div class="panel-title"><span>CI reliability</span><small id="ci-rel-window">$ci_rel->{window_days}d window · $ci_rel->{runs} runs retained · $ci_rel->{coverage_days}d coverage</small></div>
+ <div class="panel-title"><span>CI reliability · <b class="panel-repo" id="ci-repo">$repo</b></span><small id="ci-rel-window">$ci_rel->{window_days}d window · $ci_rel->{runs} runs retained · $ci_rel->{coverage_days}d coverage</small></div>
  <div class="ci-reliability-grid">
   <div class="ci-reliability-cell"><span>Signal</span><strong id="ci-rel-state" class="$ci_rel_class">$ci_rel_state</strong><small id="ci-rel-state-note">$ci_rel_state_note</small></div>
   <div class="ci-reliability-cell"><span>Pass rate</span><strong id="ci-rel-pass" class="$ci_rel_pass_class">$ci_rel_pass</strong><small id="ci-rel-outcomes">$ci_rel->{success} success · $ci_rel->{failed} failed</small></div>
@@ -3331,8 +3547,9 @@ HTML
 }
 sub status_payload {
  my@targets=map{my$c=channel_config($_->{net},$_->{channel});{network=>$_->{net}{id},label=>$_->{net}{label},channel=>$_->{channel},transport=>$_->{net}{tls}?'tls':'tcp',joined=>$c&&$c->{joined}?1:0,join_error=>$c?clean($c->{join_error}||''):'',delivery_error=>$c?clean($c->{send_error}||''):'',delivery_retry_at=>$c?int($c->{send_retry_at}||0):0,plain_only=>$c&&$c->{plain_only}?1:0,awaiting=>delivery_receipt($_->{id})?1:0}}enabled_targets();
+ my@repositories=repository_status_rows();
  +{
-  version=>VERSION,repo=>$CFG{repo},uptime=>uptime(),icon_mode=>$CFG{icon_mode},
+  version=>VERSION,repo=>$REPOS[0]{name},repos=>[configured_repo_names()],repositories=>\@repositories,uptime=>uptime(),icon_mode=>$CFG{icon_mode},
   irc=>{
    epiknet=>(!$NET{epiknet}{enabled}?'off':$NET{epiknet}{up}?'online':'offline'),
    libera=>(!$NET{libera}{enabled}?'off':$NET{libera}{up}?'online':'offline'),
@@ -3341,7 +3558,7 @@ sub status_payload {
    heartbeat=>{idle_ping_seconds=>$CFG{irc_idle_ping},pong_timeout_seconds=>$CFG{irc_pong_timeout},timeouts=>$STATS{irc_heartbeat_timeouts}},
   },
   webhook=>webhook_state(),webhook_detail=>{last_reject_reason=>$STATE{last_hook_reject_reason}||'',last_reject_at=>$STATE{last_hook_reject_at}||0,duplicates=>$STATS{hook_dupe},suppressed=>$STATS{hook_suppressed},bad_signature=>$STATS{hook_bad_signature},bad_content_type=>$STATS{hook_bad_content_type},missing_headers=>$STATS{hook_missing_headers},invalid_json=>$STATS{hook_bad_json},wrong_repo=>$STATS{hook_wrong_repo},read_rejected=>$STATS{hook_read_rejected}},
-  github_api=>api_state(),github_actions=>actions_state(),ci_reliability=>ci_reliability_summary(),github_traffic=>{%{traffic_payload()},render_error=>$RUN{traffic_render_error}||''},github_account=>account_status_payload(),broadcast=>broadcast_payload(),
+  github_api=>api_state(),github_actions=>actions_state(),ci_reliability=>{%{ci_reliability_summary()},repo=>$CFG{repo}},github_traffic=>{%{traffic_payload()},render_error=>$RUN{traffic_render_error}||''},github_account=>account_status_payload(),broadcast=>broadcast_payload(),
   current_ci_failures=>current_ci_failure_count(),current_ci_running=>current_ci_running_count(),current_ci_expected=>current_ci_expected_count(),current_ci_flaky=>current_ci_flaky_count(),auth=>auth_short(),rss=>rss_state(),
   health=>health_report(),http_listener=>{listening=>$RUN{listener}?1:0,started_at=>$RUN{http_listener_started}||0,error=>$RUN{http_listener_error}||'',bind=>$CFG{hook_bind},port=>$CFG{hook_port},last_at=>$RUN{http_last_at}||0,last_method=>$RUN{http_last_method}||'',last_path=>$RUN{http_last_path}||'',last_status=>$RUN{http_last_status}||0,root_post_alias=>$CFG{hook_root_alias}?1:0},state=>state_status(),ops_alerts=>{enabled=>$CFG{ops_alerts}?1:0,debounce_seconds=>$CFG{ops_debounce},degraded=>$STATS{ops_degraded_alerts},recovered=>$STATS{ops_recovery_alerts}},github_rate=>{remaining=>$RUN{rate_remaining},limit=>$RUN{rate_limit},reset=>$RUN{rate_reset},blocked_until=>$RUN{rate_block_until}||0,reason=>$RUN{rate_block_reason}||''},
   queue=>scalar(@{$STATE{pending}}),queue_detail=>queue_snapshot(),history_count=>scalar(@{$STATE{history}}),last_event_source=>$STATE{last_event_source}||'',last_event_at=>$STATE{last_event_at}||0,
@@ -3366,7 +3583,10 @@ sub prometheus_metrics {
  my$q=queue_snapshot();my$limited=github_rest_allowed()?0:1;my@out;my$tr=traffic_summary_data();my$aud=traffic_audience_summary();my$latest=traffic_latest_snapshot();my$hist=traffic_history_summary();my$acct=account_summary();
  push@out,'# HELP githubwatch_info IRC GitWatch build information';
  push@out,'# TYPE githubwatch_info gauge';
- push@out,'githubwatch_info{version="'.prom_escape(VERSION).'",repo="'.prom_escape($CFG{repo}).'",account="'.prom_escape($CFG{account}).'"} 1';
+ push@out,'githubwatch_info{version="'.prom_escape(VERSION).'",repo="'.prom_escape($REPOS[0]{name}).'",account="'.prom_escape($CFG{account}).'"} 1';
+ push@out,'# TYPE githubwatch_repository_configured gauge';push@out,'# TYPE githubwatch_repository_events_up gauge';push@out,'# TYPE githubwatch_repository_actions_up gauge';
+ push@out,'# TYPE githubwatch_repository_ci_failures gauge';push@out,'# TYPE githubwatch_repository_ci_running gauge';push@out,'# TYPE githubwatch_repository_events_last_ok_timestamp gauge';push@out,'# TYPE githubwatch_repository_actions_last_ok_timestamp gauge';push@out,'# TYPE githubwatch_repository_traffic_last_ok_timestamp gauge';
+ for my$repo(@REPOS){my$x=with_repo_context($repo,sub{+{events=>api_state(),actions=>actions_state(),failures=>current_ci_failure_count(),running=>current_ci_running_count(),events_at=>int($RUN{last_api_ok}||0),actions_at=>int($STATE{last_actions_ok}||0),traffic_at=>int($STATE{last_traffic_ok}||0)}});my$l='{repo="'.prom_escape($repo->{name}).'"}';push@out,'githubwatch_repository_configured'.$l.' 1';push@out,'githubwatch_repository_events_up'.$l.' '.($x->{events}eq'online'?1:0);push@out,'githubwatch_repository_actions_up'.$l.' '.($x->{actions}eq'online'?1:0);push@out,'githubwatch_repository_ci_failures'.$l.' '.$x->{failures};push@out,'githubwatch_repository_ci_running'.$l.' '.$x->{running};push@out,'githubwatch_repository_events_last_ok_timestamp'.$l.' '.$x->{events_at};push@out,'githubwatch_repository_actions_last_ok_timestamp'.$l.' '.$x->{actions_at};push@out,'githubwatch_repository_traffic_last_ok_timestamp'.$l.' '.$x->{traffic_at}}
  push@out,'# TYPE githubwatch_uptime_seconds gauge';push@out,'githubwatch_uptime_seconds '.int(time-$RUN{started});
  push@out,'# TYPE githubwatch_http_listener_up gauge';push@out,'githubwatch_http_listener_up '.($RUN{listener}?1:0);
  push@out,'# TYPE githubwatch_irc_connected gauge';
@@ -3460,6 +3680,9 @@ sub prometheus_metrics {
 sub normalized_http_path {
  my($p)=@_;$p//=q{};$p=~s/[?#].*$//;$p=~s{/$}{} if length($p)>1;$p||'/';
 }
+sub http_url_encode {
+ my($s)=@_;$s//=q{};$s=encode('UTF-8',$s);$s=~s/([^A-Za-z0-9._~-])/sprintf('%%%02X',ord($1))/ge;$s;
+}
 sub http_url_decode {
  my($s)=@_;$s//=q{};$s=~tr/+/ /;$s=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/ge;$s;
 }
@@ -3471,8 +3694,17 @@ sub http_query_param {
  }
  q{};
 }
+sub dashboard_repo_path_spec {
+ my($path)=@_;$path=normalized_http_path($path);
+ return(0,undef)unless$path=~m{^/repo/([^/]+)/([^/]+)$};
+ my$name=http_url_decode($1).'/'.http_url_decode($2);
+ (1,repo_spec($name));
+}
 sub dashboard_payload {
  my$s=status_payload();
+ $s->{primary_repo}=$REPOS[0]{name};
+ $s->{repo}=$CFG{repo};
+ $s->{selected_repo}=$CFG{repo};
  $s->{server_time}=int(time);
  $s->{last_event_text}=repair_activity_text($STATE{last_event_text}||'',$STATE{last_event_source});
  $s->{recent_activity}=[
@@ -3485,6 +3717,7 @@ sub dashboard_payload {
   hidden_poll_seconds=>$CFG{dashboard_hidden},
   timeout_seconds=>$CFG{dashboard_timeout},
   public_url=>$CFG{dashboard_public_url},
+  repository_path=>'/repo/'.join('/',map{http_url_encode($_)}split(m{/},$CFG{repo},2)),
  };
  $s;
 }
@@ -3617,32 +3850,38 @@ sub handle_hook {
 
  my$want=normalized_http_path($CFG{hook_path});
  my$got =normalized_http_path($path);
- my$api=http_query_param($path,'api');my$asset=http_query_param($path,'asset');
+ my$api=http_query_param($path,'api');my$asset=http_query_param($path,'asset');my$repo_query=http_query_param($path,'repo');
+ my($is_repo_route,$route_repo)=dashboard_repo_path_spec($got);
+ return http_reply($c,404,'unknown repository')if$is_repo_route&&!$route_repo;
+ my$is_dashboard_route=($got eq'/'||$got eq$want||$is_repo_route);
+ my$dashboard_repo=$repo_query ne''?repo_spec_query($repo_query):($route_repo||$REPOS[0]);
+ return http_reply($c,404,'unknown repository')if$is_dashboard_route&&$repo_query ne''&&!$dashboard_repo;
  $STATS{http_requests}++;
- my$is_dashboard_poll=($m eq'GET'||$m eq'HEAD')&&($got eq'/'||$got eq$want)&&($api eq'dashboard'||$asset eq'dashboard-js');
+ my$is_dashboard_poll=($m eq'GET'||$m eq'HEAD')&&$is_dashboard_route&&($api eq'dashboard'||$asset eq'dashboard-js');
  unless($is_dashboard_poll){$RUN{http_last_at}=time;$RUN{http_last_method}=$m;$RUN{http_last_path}=clean($got)}
 
  # Same-path assets and JSON mean one Apache ProxyPass for the webhook path is enough.
- if(($m eq'GET'||$m eq'HEAD')&&($got eq'/'||$got eq$want)&&$asset eq'dashboard-js'){
+ if(($m eq'GET'||$m eq'HEAD')&&$is_dashboard_route&&$asset eq'dashboard-js'){
   http_response($c,200,'application/javascript',dashboard_js(),$m eq'HEAD');return;
  }
- if(($m eq'GET'||$m eq'HEAD')&&($got eq'/'||$got eq$want)&&$api ne''){
+ if(($m eq'GET'||$m eq'HEAD')&&$is_dashboard_route&&$api ne''){
   if($api eq'dashboard'){
    $STATS{dashboard_api_requests}++;
-   my$json=eval{encode_json(dashboard_payload())};
+   my$json=eval{with_repo_context($dashboard_repo,sub{encode_json(dashboard_payload())})};
    if(!defined($json)||$@){$STATS{dashboard_api_errors}++;http_reply($c,500,'dashboard API error');return}
    http_response($c,200,'application/json',$json,$m eq'HEAD',1);return;
   }
   if($api eq'broadcast'){http_response($c,200,'application/json',encode_json(broadcast_payload()),$m eq'HEAD',1);return}
-  if($api eq'traffic'){http_response($c,200,'application/json',encode_json(traffic_payload()),$m eq'HEAD',1);return}
+  if($api eq'traffic'){my$j=with_repo_context($dashboard_repo,sub{encode_json(traffic_payload())});http_response($c,200,'application/json',$j,$m eq'HEAD',1);return}
   if($api eq'account'){http_response($c,200,'application/json',encode_json(account_payload()),$m eq'HEAD',1);return}
-  if($api eq'ci'){http_response($c,200,'application/json',encode_json(ci_reliability_payload()),$m eq'HEAD',1);return}
+  if($api eq'ci'){my$j=with_repo_context($dashboard_repo,sub{encode_json(ci_reliability_payload())});http_response($c,200,'application/json',$j,$m eq'HEAD',1);return}
   http_reply($c,404,'unknown dashboard API');return;
  }
 
  # Progressive HTML shell. POST on the same path remains the HMAC webhook.
- if(($m eq'GET'||$m eq'HEAD')&&($got eq'/'||$got eq$want)){
-  http_response($c,200,'text/html',dashboard_html(),$m eq'HEAD');
+ if(($m eq'GET'||$m eq'HEAD')&&$is_dashboard_route){
+  my$html=with_repo_context($dashboard_repo,sub{dashboard_html()});
+  http_response($c,200,'text/html',$html,$m eq'HEAD');
   return;
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/status.json'){
@@ -3651,7 +3890,8 @@ sub handle_hook {
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/dashboard.json'){
   $STATS{dashboard_api_requests}++;
-  my$json=eval{encode_json(dashboard_payload())};
+  my$rs=repo_spec_query($repo_query);return http_reply($c,404,'unknown repository')unless$rs;
+  my$json=eval{with_repo_context($rs,sub{encode_json(dashboard_payload())})};
   if(!defined($json)||$@){$STATS{dashboard_api_errors}++;http_reply($c,500,'dashboard API error');return}
   http_response($c,200,'application/json',$json,$m eq'HEAD',1);return;
  }
@@ -3674,13 +3914,13 @@ sub handle_hook {
   http_response($c,200,'application/json',encode_json(broadcast_payload()),$m eq'HEAD',1);return;
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/traffic.json'){
-  http_response($c,200,'application/json',encode_json(traffic_payload()),$m eq'HEAD',1);return;
+  my$rs=repo_spec_query($repo_query);return http_reply($c,404,'unknown repository')unless$rs;my$j=with_repo_context($rs,sub{encode_json(traffic_payload())});http_response($c,200,'application/json',$j,$m eq'HEAD',1);return;
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/account.json'){
   http_response($c,200,'application/json',encode_json(account_payload()),$m eq'HEAD',1);return;
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/ci.json'){
-  http_response($c,200,'application/json',encode_json(ci_reliability_payload()),$m eq'HEAD',1);return;
+  my$rs=repo_spec_query($repo_query);return http_reply($c,404,'unknown repository')unless$rs;my$j=with_repo_context($rs,sub{encode_json(ci_reliability_payload())});http_response($c,200,'application/json',$j,$m eq'HEAD',1);return;
  }
  if(($m eq'GET'||$m eq'HEAD')&&$got eq'/metrics'){
   return http_reply($c,404,'not found') unless$CFG{metrics_enabled};
@@ -3712,23 +3952,26 @@ sub handle_hook {
  my$p=eval{decode_json($body)};
  if(!$p||ref$p ne'HASH'){hook_reject($c,400,'invalid_json','invalid JSON');return}
  my$pr=ref($p->{repository})eq'HASH'?clean($p->{repository}{full_name}||''):'';
- if($event ne'ping'&&lc($pr)ne lc($CFG{repo})){hook_reject($c,401,'wrong_repository','wrong repository');return}
+ my$spec=repo_spec($pr);$spec=$REPOS[0]if$event eq'ping'&&$pr eq'';
+ if(!$spec){hook_reject($c,401,'wrong_repository','wrong repository');return}
 
- $STATS{hook_valid}++;$STATE{last_hook_ok}=time;$STATE{last_hook_event}=$event;$STATE{deliveries}{$delivery}=time;
- if($event eq'ping'){save_state();http_reply($c,200,'pong');return}
- if(!public_event($event)||!supported_hook_event($event)){$STATS{hook_suppressed}++;save_state();http_reply($c,202,'accepted but hidden');return}
+ with_repo_context($spec,sub{
+  $STATS{hook_valid}++;$STATE{last_hook_ok}=time;$STATE{last_hook_event}=$event;$STATE{deliveries}{$delivery}=time;
+  if($event eq'ping'){save_state();http_reply($c,200,'pong');return 1}
+  if(!public_event($event)||!supported_hook_event($event)){$STATS{hook_suppressed}++;save_state();http_reply($c,202,'accepted but hidden');return 1}
 
- my$n=normalize_hook($event,$p);kick_actions()if($n->{kind}||'')eq'push';
- if(($n->{kind}||'')eq'ci'){
-  update_running_ci_event($n,1);
-  my$recovered=ci_track_state($n);track_ci_flap($n,1);$STATS{actions_recoveries}++ if$recovered;kick_actions()
- }
- my$f=fingerprint($n);
- if($STATE{fingerprints}{$f}){$STATS{hook_dupe}++;save_state();http_reply($c,200,'already seen');return}
- expect_ci_for_push($n)if($n->{kind}||'')eq'push';
- $STATE{fingerprints}{$f}=time;
- if(!webhook_event_should_announce($n)){$STATS{hook_suppressed}++;save_state();http_reply($c,202,'accepted but not announced');return}
- enqueue(format_event($n),'hook');http_reply($c,202,'queued');
+  my$n=normalize_hook($event,$p);kick_actions()if($n->{kind}||'')eq'push';
+  if(($n->{kind}||'')eq'ci'){
+   update_running_ci_event($n,1);
+   my$recovered=ci_track_state($n);track_ci_flap($n,1);$STATS{actions_recoveries}++ if$recovered;kick_actions()
+  }
+  my$f=fingerprint($n);
+  if($STATE{fingerprints}{$f}){$STATS{hook_dupe}++;save_state();http_reply($c,200,'already seen');return 1}
+  expect_ci_for_push($n)if($n->{kind}||'')eq'push';
+  $STATE{fingerprints}{$f}=time;
+  if(!webhook_event_should_announce($n)){$STATS{hook_suppressed}++;save_state();http_reply($c,202,'accepted but not announced');return 1}
+  enqueue(format_event($n),'hook');http_reply($c,202,'queued');1;
+ });
 }
 sub start_hook {
  my($quiet)=@_;return 1 if$RUN{listener};
@@ -3765,40 +4008,39 @@ sub webhook_test_server_cli {
 }
 
 # ── Reconciliation / lifecycle ───────────────────────────────────────────────
-sub maintenance_once {
- my($fresh,$actions_fresh,$rss_fresh)=@_;my$now=time;
-
- # Local non-blocking timers run before HTTP maintenance.
+sub repository_maintenance_once {
+ my$now=time;my$fresh=\$RUN{events_fresh};my$actions_fresh=\$RUN{actions_fresh};
  return 1 if check_missing_ci();
- return 1 if check_ops_alerts();
 
  # CI alerts take priority over catch-up. Enrichment gets one REST turn when
- # possible; if GitHub is rate-limited, the base failure is flushed immediately
- # instead of being held until the rate-limit window ends.
+ # possible; if GitHub is rate-limited, the base failure is flushed immediately.
  return process_ci_enrichment() if @{$STATE{ci_enrich_pending}};
-
- # Multi-page catch-up is itself serialized: one page = one loop turn.
  return continue_events_scan($fresh) if$RUN{events_scan}&&github_rest_allowed();
  return continue_actions_scan($actions_fresh) if$RUN{actions_scan}&&github_rest_allowed();
- return continue_account_scan() if$RUN{account_scan}&&github_rest_allowed();
 
  my@jobs;
  push@jobs,[$RUN{next_poll},'events'] if$CFG{poll_enabled}&&github_rest_allowed();
  push@jobs,[$RUN{actions_next},'actions'] if$CFG{actions_enabled}&&github_rest_allowed();
  push@jobs,[$RUN{traffic_next},'traffic'] if$CFG{traffic_enabled}&&$CFG{token}ne''&&github_rest_allowed();
- push@jobs,[$RUN{account_next},'account'] if$CFG{account_enabled}&&github_rest_allowed();
- push@jobs,[$RUN{rss_next},'rss'] if$CFG{rss_enabled};
- return 0 unless@jobs;
- @jobs=sort{$a->[0]<=>$b->[0]}@jobs;
- return 0 if$jobs[0][0]>$now;
-
+ return 0 unless@jobs;@jobs=sort{$a->[0]<=>$b->[0]}@jobs;return 0 if$jobs[0][0]>$now;
  my$job=$jobs[0][1];
- return reconcile($fresh) if$job eq'events';
- return reconcile_actions($actions_fresh) if$job eq'actions';
- return reconcile_traffic() if$job eq'traffic';
- return reconcile_account() if$job eq'account';
- return reconcile_rss($rss_fresh) if$job eq'rss';
- 0;
+ return reconcile($fresh)if$job eq'events';return reconcile_actions($actions_fresh)if$job eq'actions';return reconcile_traffic()if$job eq'traffic';0;
+}
+sub maintenance_once {
+ my($rss_fresh)=@_;my$now=time;
+ return 1 if check_ops_alerts();
+
+ # Round-robin repository turns prevent a busy Actions or traffic catch-up on
+ # one project from starving another project or the shared IRC/HTTP loop.
+ my$n=scalar@REPOS;my$start=int($RUN{repo_cursor}||0)%$n;
+ for my$i(0..$n-1){my$idx=($start+$i)%$n;my$did=with_repo_context($REPOS[$idx],sub{repository_maintenance_once()});if($did){$RUN{repo_cursor}=($idx+1)%$n;return$did}}
+
+ return continue_account_scan()if$RUN{account_scan}&&github_rest_allowed();
+ my@jobs;
+ push@jobs,[$RUN{account_next},'account']if$CFG{account_enabled}&&github_rest_allowed();
+ push@jobs,[$RUN{rss_next},'rss']if$CFG{rss_enabled};
+ return 0 unless@jobs;@jobs=sort{$a->[0]<=>$b->[0]}@jobs;return 0 if$jobs[0][0]>$now;
+ return reconcile_account()if$jobs[0][1]eq'account';return reconcile_rss($rss_fresh)if$jobs[0][1]eq'rss';0;
 }
 sub reconnect_one {
  my$now=time;my@due=sort{$a->{next_reconnect}<=>$b->{next_reconnect}}
@@ -3960,6 +4202,12 @@ traffic.audience-field-contract
 traffic.trend-public-url-contract
 http.query-parameter-parser
 dashboard.api-payload-contract
+dashboard.repository-selector-html
+dashboard.repository-selector-javascript
+dashboard.repository-rail-html
+dashboard.repository-context-javascript
+dashboard.repository-payload-scope
+http.repository-deep-link-parser
 delivery.configured-target-enqueue
 delivery.four-target-completion
 delivery.epiknet-wire-format
@@ -4121,7 +4369,7 @@ sub selftest {
  unlink$self_sf;$CFG{state_file}=$old_sf;$STATE{ci_enrich_pending}=$old_enrich;$STATS{actions_enrich_skipped}=$old_skip;$RUN{rate_block_until}=$old_block_until;
 
  my($old_poll_enabled,$old_actions_enabled,$old_rss_enabled,$old_traffic_enabled,$old_account_enabled)=@CFG{qw(poll_enabled actions_enabled rss_enabled traffic_enabled account_enabled)};
- @CFG{qw(poll_enabled actions_enabled rss_enabled traffic_enabled account_enabled)}=(0,0,0,0,0);push@t,maintenance_once(\my$f0,\my$a0,\my$r0)==0;
+ @CFG{qw(poll_enabled actions_enabled rss_enabled traffic_enabled account_enabled)}=(0,0,0,0,0);push@t,maintenance_once(\my$r0)==0;
  @CFG{qw(poll_enabled actions_enabled rss_enabled traffic_enabled account_enabled)}=($old_poll_enabled,$old_actions_enabled,$old_rss_enabled,$old_traffic_enabled,$old_account_enabled);
 
  my$old_history=[map{{%$_}}@{$STATE{history}}];$STATE{history}=[];
@@ -4281,7 +4529,7 @@ sub selftest {
  my$ci_dash=dashboard_html();my$ci_js=dashboard_js();push@t,$ci_dash=~/CI reliability/&&$ci_dash=~/id="ci-rel-pass"/&&$ci_dash=~/id="ci-rel-incidents"/&&$ci_dash=~/\?api=ci/;
  push@t,$ci_js=~/function renderReliability\(d\)/&&$ci_js=~/ci_reliability/&&$ci_js=~/ci-rel-streak/&&$ci_js=~/const duration=/;
  my$ci_metrics=prometheus_metrics();push@t,$ci_metrics=~/githubwatch_ci_reliability_pass_ratio 0\.600000/&&$ci_metrics=~/githubwatch_ci_mttr_seconds 600/&&$ci_metrics=~/githubwatch_ci_duration_p95_seconds 120/;
- my$ci_status=status_payload();push@t,ref($ci_status->{ci_reliability})eq'HASH'&&$ci_status->{ci_reliability}{resolved_incidents}==1;
+ my$ci_status=status_payload();push@t,ref($ci_status->{ci_reliability})eq'HASH'&&$ci_status->{ci_reliability}{resolved_incidents}==1&&$ci_status->{ci_reliability}{repo}eq$CFG{repo};
  my$ci_wire='';open my$ci_fh,'>',\$ci_wire or die"CI reliability selftest: $!";binmode$ci_fh,':raw';my$ci_net={id=>'ci-test',label=>'CI test',up=>1,socket=>$ci_fh,nick=>'gitwatch'};my$ci_cd=$CFG{cmd_cooldown};$CFG{cmd_cooldown}=0;command($ci_net,'tester','#test','!github reliability');command($ci_net,'tester','#test','!github incidents');$CFG{cmd_cooldown}=$ci_cd;close$ci_fh;my$ci_text=decode('UTF-8',$ci_wire);push@t,$ci_text=~/CI reliability/&&$ci_text=~/60%/&&$ci_text=~/CI recovery/&&$ci_text=~/Latest recovery/;
  $STATE{ci_bad_state}={$build_scope=>{run_id=>6,at=>$ci_now-60,conclusion=>'failure',name=>'Build',branch=>'main',url=>$ci_url.'6',attempt=>1,duration=>45}};my$rel_degraded=ci_reliability_summary($ci_now);push@t,$rel_degraded->{state}eq'degraded'&&$rel_degraded->{active_incidents}==1&&$rel_degraded->{active}[0]{name}eq'Build';
  ($STATE{ci_run_history},$STATE{ci_bad_state},$CFG{actions_enabled})=($old_ci_history,$old_ci_bad,$old_ci_actions_enabled);
@@ -4305,12 +4553,18 @@ sub selftest {
  my$dash25=dashboard_html();my$js25=dashboard_js();my$dp25=dashboard_payload();my$aud25=traffic_audience_summary();
  push@t,$dash25=~/id="traffic-chart"/&&$dash25=~/class="stat-row"/&&$dash25=~/Top referrers/&&$dash25=~/Popular content/&&$dash25=~/<details class="card full"/;
  push@t,$dash25!~/<meta\s+http-equiv=["']refresh/i&&$dash25=~/\?asset=dashboard-js/&&$dash25=~/id="live-badge"/&&$dash25=~/Unique cloners/&&$dash25=~/Unique visitors/;
- push@t,$js25=~/fetch\(endpoint\(\)/&&$js25=~/visibilitychange/&&$js25=~/AbortController/&&$js25=~/requestAnimationFrame/&&$js25=~/renderChart\(d\)/&&$js25=~/createElementNS/&&$js25!~/location\.reload/;
+ push@t,$js25=~/fetch\(endpoint\(requestedRepo\)/&&$js25=~/visibilitychange/&&$js25=~/AbortController/&&$js25=~/requestAnimationFrame/&&$js25=~/renderChart\(d\)/&&$js25=~/createElementNS/&&$js25!~/location\.reload/;
  push@t,$js25=~/chartRange/&&$js25=~/range-btn/&&$js25=~/chart-tooltip/;
  push@t,ref($aud25)eq'HASH'&&exists$aud25->{clone_uniques}&&exists$aud25->{view_uniques}&&exists$aud25->{today_clone_uniques}&&exists$aud25->{today_view_uniques};
  push@t,traffic_trend_text('clones')=~/today/&&($CFG{dashboard_public_url}eq''||$CFG{dashboard_public_url}=~m{^https?://}i);
  push@t,http_query_param('/githubhook?api=dashboard&x=1','api')eq'dashboard'&&http_query_param('/githubhook?asset=dashboard-js','asset')eq'dashboard-js';
  push@t,ref($dp25)eq'HASH'&&ref($dp25->{recent_activity})eq'ARRAY'&&ref($dp25->{dashboard})eq'HASH'&&$dp25->{dashboard}{mode}eq'component-poll';
+ push@t,$dash25=~/id="repo-select"/&&$dash25=~/<option value="\Q$CFG{repo}\E" selected>/&&$dash25=~/id="traffic-repo">\Q$CFG{repo}\E</;
+ push@t,$js25=~/history\.pushState/&&$js25=~/popstate/&&$js25=~/repositoryPath/&&$js25=~/selected_repo/;
+ push@t,$dash25=~/id="repo-tabs"/&&$dash25=~/class="repo-tab active"/&&$dash25=~/repo-primary-mark/&&$dash25=~/id="repo-context-health"/&&$dash25=~/id="repo-permalink"/;
+ push@t,$js25=~/function syncRepositoryControls\(d,wanted\)/&&$js25=~/repositorySignal/&&$js25=~/repo-tab-dot/&&$js25=~/repo-switching/&&$js25=~/repo-context-health/;
+ push@t,$dp25->{selected_repo}eq$CFG{repo}&&$dp25->{primary_repo}eq$REPOS[0]{name}&&$dp25->{dashboard}{repository_path}eq'/repo/'.join('/',split(m{/},$CFG{repo},2));
+ my($repo_path_match,$repo_path_spec)=dashboard_repo_path_spec('/repo/'.join('/',split(m{/},$CFG{repo},2)));my($plain_path_match)=dashboard_repo_path_spec('/status.json');push@t,$repo_path_match&&$repo_path_spec&&$repo_path_spec->{name}eq$CFG{repo}&&!$plain_path_match;
 
  # v0.21 deterministic configured-target broadcast regression.
  my@fan_save=map{{enabled=>$_->{enabled},up=>$_->{up},socket=>$_->{socket},next_send=>$_->{next_send},send_cursor=>$_->{send_cursor},
@@ -4431,13 +4685,13 @@ sub state_fixture_check_cli {
  $bad?1:0;
 }
 sub reconciliation_test_fixture_cli {
- my($path,$mode)=@_;
+ my($path,$mode,$repo_name)=@_;
  if(env_text('IRC_GITWATCH_TEST_MODE','')ne'1'){
   print STDERR "reconciliation fixture runner is available only in explicit test mode\n";
   return 64;
  }
  if(!defined$path||$path eq''||!defined$mode||$mode!~/^(?:baseline|incremental)$/){
-  print STDERR "usage: ".APP_NAME." --reconciliation-test-fixture FILE baseline|incremental\n";
+  print STDERR "usage: ".APP_NAME." --reconciliation-test-fixture FILE baseline|incremental [repository]\n";
   return 64;
  }
  open my$fh,'<:raw',$path or do{print STDERR "cannot read $path: $!\n";return 66};
@@ -4447,27 +4701,15 @@ sub reconciliation_test_fixture_cli {
   print STDERR "reconciliation fixture must contain a JSON array\n";
   return 65;
  }
- load_state();
- my$fresh=$mode eq'baseline'?1:0;
- my$ok=eval{process_events_batch(\$fresh,$events);1};
- if(!$ok){print STDERR clean($@||'reconciliation fixture failed')."\n";return 1}
-
- my@pending_sources=map{clean($_->{source}||'')}@{$STATE{pending}};
- my@pending_targets;
- for my$item(@{$STATE{pending}}){
-  my$targets=ref($item->{targets})eq'ARRAY'?$item->{targets}:[];
-  push@pending_targets,[map{clean($_)}@$targets];
- }
- my@history_sources=map{clean($_->{source}||'')}@{$STATE{history}};
- print encode_json({
-  mode=>$mode,events=>scalar(@$events),event_seen=>scalar(keys%{$STATE{event_seen}}),
-  fingerprints=>scalar(keys%{$STATE{fingerprints}}),deliveries=>scalar(keys%{$STATE{deliveries}}),
-  pending=>scalar(@{$STATE{pending}}),pending_sources=>\@pending_sources,
-  pending_targets=>\@pending_targets,history_sources=>\@history_sources,
-  broadcast_enqueued=>int($STATS{broadcast_enqueued}||0),poll_new=>int($STATS{poll_new}||0),
-  poll_sent=>int($STATS{poll_sent}||0),hook_valid=>int($STATS{hook_valid}||0),
-  hook_dupe=>int($STATS{hook_dupe}||0),
- })."\n";
+ load_state();my$spec=repo_spec_query($repo_name//'');if(!$spec){print STDERR "unknown configured repository\n";return 64}
+ my$out=with_repo_context($spec,sub{
+  my$fresh=$mode eq'baseline'?1:0;process_events_batch(\$fresh,$events);
+  my@pending_sources=map{clean($_->{source}||'')}@{$STATE{pending}};my@pending_targets;
+  for my$item(@{$STATE{pending}}){my$targets=ref($item->{targets})eq'ARRAY'?$item->{targets}:[];push@pending_targets,[map{clean($_)}@$targets]}
+  my@history_sources=map{clean($_->{source}||'')}@{$STATE{history}};
+  +{repo=>$CFG{repo},mode=>$mode,events=>scalar(@$events),event_seen=>scalar(keys%{$STATE{event_seen}}),fingerprints=>scalar(keys%{$STATE{fingerprints}}),deliveries=>scalar(keys%{$STATE{deliveries}}),pending=>scalar(@{$STATE{pending}}),pending_sources=>\@pending_sources,pending_targets=>\@pending_targets,history_sources=>\@history_sources,broadcast_enqueued=>int($STATS{broadcast_enqueued}||0),poll_new=>int($STATS{poll_new}||0),poll_sent=>int($STATS{poll_sent}||0),hook_valid=>int($STATS{hook_valid}||0),hook_dupe=>int($STATS{hook_dupe}||0)};
+ });
+ print encode_json($out)."\n";
  0;
 }
 sub delivery_test_summary {
@@ -4630,34 +4872,30 @@ sub doctor {
  elsif($RUN{auth_state}eq'anonymous'){doctor_line('WARN','GitHub auth','anonymous public mode');$warn++}
  else{doctor_line('FAIL','GitHub auth',auth_short().' · '.clean($RUN{auth_error}));$fail++}
 
- if(github_rest_allowed()){
-  my$r=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/events?per_page=1",{headers=>api_headers($RUN{token},0)})};
-  if($r&&ref$r eq'HASH'){note_rate_limit($r,'doctor events')}
-  if($r&&ref$r eq'HASH'&&$r->{status}==200){doctor_line('PASS','Events API',"$RUN{rate_remaining}/$RUN{rate_limit} remaining")}
-  else{doctor_line('FAIL','Events API',$r&&ref$r eq'HASH'?"HTTP $r->{status} $r->{reason}":clean($@||'request failed'));$fail++}
- }else{doctor_line('WARN','Events API','rate limited · resume '.rate_resume_text());$warn++}
-
- if($CFG{actions_enabled}){
+ for my$repo(@REPOS){with_repo_context($repo,sub{
+  my$label=$CFG{repo};
   if(github_rest_allowed()){
-   my$token=$RUN{actions_auth_mode}eq'anonymous-fallback'?'':$RUN{token};
-   my$r=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/actions/runs?per_page=1",{headers=>api_headers($token,0)})};
-   note_rate_limit($r,'doctor actions') if$r&&ref$r eq'HASH';
-   if($r&&ref$r eq'HASH'&&$r->{status}==200){doctor_line('PASS','Actions API','readable')}
-   elsif($token ne''){doctor_line('WARN','Actions API','authenticated access unavailable; public fallback may still work');$warn++}
-   else{doctor_line('FAIL','Actions API',$r&&ref$r eq'HASH'?"HTTP $r->{status} $r->{reason}":clean($@||'request failed'));$fail++}
-  }else{doctor_line('WARN','Actions API','rate limited · skipped');$warn++}
- }else{doctor_line('PASS','Actions API','disabled')}
+   my$r=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/events?per_page=1",{headers=>api_headers($RUN{token},0)})};note_rate_limit($r,'doctor events')if$r&&ref$r eq'HASH';
+   if($r&&ref$r eq'HASH'&&$r->{status}==200){doctor_line('PASS',$label.' Events',"$RUN{rate_remaining}/$RUN{rate_limit} remaining")}
+   else{doctor_line('FAIL',$label.' Events',$r&&ref$r eq'HASH'?"HTTP $r->{status} $r->{reason}":clean($@||'request failed'));$fail++}
+  }else{doctor_line('WARN',$label.' Events','rate limited · resume '.rate_resume_text());$warn++}
 
- if($CFG{traffic_enabled}){
-  if($CFG{token}eq''){doctor_line('WARN','GitHub Traffic','token required for repository traffic stats');$warn++}
-  elsif(!github_rest_allowed()){doctor_line('WARN','GitHub Traffic','rate limited · skipped');$warn++}
-  else{
-   my$d=traffic_fetch_stage('clones');
-   if(defined$d){doctor_line('PASS','GitHub Traffic','clones endpoint readable')}
-   elsif($RUN{traffic_permission}eq'forbidden'){doctor_line('WARN','GitHub Traffic','HTTP 403 · token needs repository traffic permission');$warn++}
-   else{doctor_line('WARN','GitHub Traffic',clean($RUN{traffic_error}||'unavailable'));$warn++}
-  }
- }else{doctor_line('PASS','GitHub Traffic','disabled')}
+  if($CFG{actions_enabled}){
+   if(github_rest_allowed()){
+    my$token=$RUN{actions_auth_mode}eq'anonymous-fallback'?'':$RUN{token};my$r=eval{$HTTP->get("https://api.github.com/repos/$CFG{repo}/actions/runs?per_page=1",{headers=>api_headers($token,0)})};note_rate_limit($r,'doctor actions')if$r&&ref$r eq'HASH';
+    if($r&&ref$r eq'HASH'&&$r->{status}==200){doctor_line('PASS',$label.' Actions','readable')}
+    elsif($token ne''){doctor_line('WARN',$label.' Actions','authenticated access unavailable; public fallback may still work');$warn++}
+    else{doctor_line('FAIL',$label.' Actions',$r&&ref$r eq'HASH'?"HTTP $r->{status} $r->{reason}":clean($@||'request failed'));$fail++}
+   }else{doctor_line('WARN',$label.' Actions','rate limited · skipped');$warn++}
+  }else{doctor_line('PASS',$label.' Actions','disabled')}
+
+  if($CFG{traffic_enabled}){
+   if($CFG{token}eq''){doctor_line('WARN',$label.' Traffic','token required for repository traffic stats');$warn++}
+   elsif(!github_rest_allowed()){doctor_line('WARN',$label.' Traffic','rate limited · skipped');$warn++}
+   else{my$d=traffic_fetch_stage('clones');if(defined$d){doctor_line('PASS',$label.' Traffic','clones endpoint readable')}elsif($RUN{traffic_permission}eq'forbidden'){doctor_line('WARN',$label.' Traffic','HTTP 403 · token needs repository traffic permission');$warn++}else{doctor_line('WARN',$label.' Traffic',clean($RUN{traffic_error}||'unavailable'));$warn++}}
+  }else{doctor_line('PASS',$label.' Traffic','disabled')}
+  1;
+ })}
 
  if($CFG{account_enabled}){
   if(!github_rest_allowed()){doctor_line('WARN',$CFG{account}.' portfolio','rate limited · skipped');$warn++}
@@ -4715,6 +4953,7 @@ sub undernet_check_cli {
 sub summary {
  print APP_NAME.' '.VERSION."\n".
   "repo=$CFG{repo}\n".
+  "repos=".join(',',configured_repo_names())."\n".
   "token=".($CFG{token}ne''?'configured':'empty')."\n".
   "http=$CFG{hook_bind}:$CFG{hook_port}; webhook_post=".($CFG{hook_secret}ne''?'enabled':'disabled')."; root_alias=".($CFG{hook_root_alias}?'on':'off')."\n".
   "events_poll=".($CFG{poll_enabled}?$CFG{reconcile}."s, catch-up <=$CFG{events_max_pages} pages":'disabled')."\n".
@@ -4735,7 +4974,7 @@ if(@ARGV){
  if($ARGV[0]eq'--selftest-list'){my@names=active_selftest_names();printf "%03d %s\n",$_+1,$names[$_]for 0..$#names;exit 0}
  if($ARGV[0]eq'--selftest'){exit selftest()}
  if($ARGV[0]eq'--state-fixture-check'){exit state_fixture_check_cli($ARGV[1],$ARGV[2])}
- if($ARGV[0]eq'--reconciliation-test-fixture'){exit reconciliation_test_fixture_cli($ARGV[1],$ARGV[2])}
+ if($ARGV[0]eq'--reconciliation-test-fixture'){exit reconciliation_test_fixture_cli($ARGV[1],$ARGV[2],$ARGV[3])}
  if($ARGV[0]eq'--delivery-test-step'){exit delivery_test_step_cli($ARGV[1],$ARGV[2])}
  if($ARGV[0]eq'--state-recovery-test-step'){exit state_recovery_test_step_cli($ARGV[1])}
  if($ARGV[0]eq'--webhook-test-server'){exit webhook_test_server_cli($ARGV[1])}
@@ -4747,13 +4986,9 @@ if(@ARGV){
  if($ARGV[0]eq'--auth-check'){exit 1 if config_check();auth_check();exit 0 if$RUN{auth_state}eq'verified'&&$RUN{auth_events}eq'ok';exit 3 if$RUN{auth_state}eq'anonymous';exit 2}
  if($ARGV[0]eq'--actions-check'){
   exit 1 if config_check();exit 3 unless$CFG{actions_enabled};auth_check();
-  my$x=fetch_actions_page($CFG{actions_url},1);if(!$x){print "GitHub Actions: ERROR — $RUN{actions_error}\n";exit 2}
-  my$r=$x->{runs};my@c=grep{clean($_->{status}//'')eq'completed'}@$r;
-  if(@c){my$e=normalize_action_run($c[0]);print "GitHub Actions: OK — ".scalar(@$r)." run(s) — latest=$e->{title} — $e->{conclusion}\n"}
-  else{print "GitHub Actions: OK — ".scalar(@$r)." run(s) — no completed run in window\n"}
-  exit 0;
+  my$bad=0;for my$repo(@REPOS){with_repo_context($repo,sub{my$x=fetch_actions_page($CFG{actions_url},1);if(!$x){print "GitHub Actions $CFG{repo}: ERROR — $RUN{actions_error}\n";$bad++;return 1}my$r=$x->{runs};my@c=grep{clean($_->{status}//'')eq'completed'}@$r;if(@c){my$e=normalize_action_run($c[0]);print "GitHub Actions $CFG{repo}: OK — ".scalar(@$r)." run(s) — latest=$e->{title} — $e->{conclusion}\n"}else{print "GitHub Actions $CFG{repo}: OK — ".scalar(@$r)." run(s) — no completed run in window\n"}1})}exit($bad?2:0);
  }
- if($ARGV[0]eq'--traffic-check'){exit 1 if config_check();exit traffic_check_cli()}
+ if($ARGV[0]eq'--traffic-check'){exit 1 if config_check();my$bad=0;for my$repo(@REPOS){my$rc=with_repo_context($repo,sub{traffic_check_cli()});$bad=$rc if$rc>$bad}exit$bad}
  if($ARGV[0]eq'--account-check'){exit 1 if config_check();exit account_check_cli()}
  if($ARGV[0]eq'--rss-check'){
   exit 1 if config_check();exit 3 unless$CFG{rss_enabled};
@@ -4766,15 +5001,13 @@ if(@ARGV){
 # ── Daemon ───────────────────────────────────────────────────────────────────
 exit 1 if config_check();
 load_state();start_hook() or die "Cannot start local HTTP/webhook listener\n";auth_check();
-logmsg('INFO',APP_NAME.' '.VERSION." ready — repo=$CFG{repo} — auth=".auth_short().
+logmsg('INFO',APP_NAME.' '.VERSION." ready — repos=".join(',',configured_repo_names())." — auth=".auth_short().
  ' — networks='.join(',',map{$_->{label}}enabled_nets()).
  ' — webhook='.hook_status().' — events='.maxn($CFG{reconcile},$RUN{poll_min}).'s'.
  ' — actions='.($CFG{actions_enabled}?"adaptive $CFG{actions_fast}s/$CFG{actions_idle}s":'off').
  ' — account='.($CFG{account_enabled}?$CFG{account}.'/'.$CFG{account_interval}.'s':'off').
  ' — rss='.($CFG{rss_enabled}?$CFG{rss_interval}.'s':'off'));
 
-my$fresh=keys(%{$STATE{event_seen}})?0:1;
-my$actions_fresh=keys(%{$STATE{actions_seen}})?0:1;
 my$rss_fresh=$STATE{rss_id_version}==2&&keys(%{$STATE{rss_seen}})?0:1;
 $_->{next_reconnect}=time for enabled_nets();
 
@@ -4822,7 +5055,7 @@ while(!$RUN{stopping}){
  $did+=reconnect_one();
 
  # Exactly one maintenance family per turn.
- $did+=maintenance_once(\$fresh,\$actions_fresh,\$rss_fresh);
+ $did+=maintenance_once(\$rss_fresh);
 
  sleep .10 unless$did;
 }

@@ -15,7 +15,9 @@ flowchart TD
 
 ## Event acquisition
 
-Signed webhooks provide low latency. Repository event polling provides reconciliation when delivery is delayed or missing. Both paths normalize into the same event model and fingerprint space.
+Signed webhooks provide low latency. Repository event polling provides reconciliation when delivery is delayed or missing. Both paths normalize into the same event model and fingerprint space. The fingerprint includes repository identity.
+
+One ordered repository registry drives the daemon. `GITHUB_REPO` is the primary scope and `GITHUB_REPOS` adds scopes. Each repository owns its Events baseline/ETag, Actions cursor and CI model, Traffic cycle and scheduler clocks. Maintenance advances repositories round-robin, one unit of work per event-loop turn. Normalized announcements then converge into the single persistent per-target IRC queue. Dashboard requests temporarily enter the selected repository context, render or serialize it, and restore the daemon's active scheduler context before returning; `/repo/<owner>/<repository>` is therefore a view, never a second worker.
 
 The reconciliation contract is restart-safe: webhook and polling observations of the same push converge on one fingerprint and one announcement, while a genuinely new polling event remains eligible. Public fixtures exercise both the overlap and catch-up paths without a GitHub connection.
 
@@ -42,14 +44,15 @@ The queue is bounded. When space is exhausted, eviction and partial-delivery los
 - Mode `0600`.
 - Optional validated `.bak` recovery copy.
 - Bounded histories, IDs, fingerprints, delivery audits, CI runs and account changes.
+- Additive `repo_state` map keyed by lowercase `owner/repository`, with the primary repository mirrored in historical top-level fields for v0.31 rollback compatibility.
 - Legacy activity text is repaired at display/serialization boundaries without rewriting unrelated strings.
 
 Before replacing the primary file, backup rotation parses and validates the current primary. Invalid bytes are never promoted into `.bak`. If the primary is corrupt or missing, startup may load the validated backup; the next save atomically rebuilds the primary while retaining pending fan-out, acknowledgements, fingerprints, history and counters. The disaster-recovery black box proves both incidents in separate Perl processes and checks mode `0600` after repair. Target retirement remains an in-schema normalization and does not require a state-version bump.
 
 ## Scope and privacy invariant
 
-- Webhook repository must equal `GITHUB_REPO`.
-- GitHub REST URLs are constructed and checked against the configured repository/account scope.
+- Webhook repository must equal `GITHUB_REPO` or one exact repository in `GITHUB_REPOS`.
+- GitHub REST URLs are constructed independently for each configured repository/account scope.
 - Portfolio inventory accepts only non-private owner repositories for `GITHUB_ACCOUNT`.
 - Security-alert event classes are deliberately not announced.
 - Configured credentials and private channel keys are excluded from every read-only surface.

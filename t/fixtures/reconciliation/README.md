@@ -10,3 +10,7 @@ fingerprint contract without contacting GitHub.
   reverse webhook-first order can be verified.
 
 All identities and URLs refer to GitHub's public `octocat/Hello-World` example.
+The black-box harness also rewrites local copies to the synthetic
+`octocat/Second-World` scope. Identical event ids and commit SHAs must remain
+independent across the two repository baselines and yield two labelled queue
+records.
