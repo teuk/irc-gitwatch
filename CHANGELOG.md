@@ -2,6 +2,20 @@
 
 All notable changes are documented here. The project follows semantic intent while the original production version number is retained for the first public release.
 
+## 0.34 — 2026-09-07 📅
+
+### Added
+
+- A repository-scoped `last_closed` traffic snapshot that selects the latest complete UTC day, prefers J-1 and explicitly reports a J-2-or-older fallback when GitHub has not published yesterday yet.
+- Prominent last-closed clone and unique-cloner figures in the dashboard toolbar, traffic cards and operational pulse; repository switching updates the date, lag and values atomically.
+- Additive Prometheus gauges for last-closed availability, lag, clones and unique cloners.
+- Deterministic coverage for exact J-1 selection, delayed J-2 fallback and exclusion of the current partial UTC day.
+
+### Compatibility
+
+- Existing rolling 14-day totals, retained history and the `latest` API object remain unchanged. Commands explicitly named `today` still show the current GitHub day; `!github snapshot` now reports the last complete day.
+- “Unique” remains GitHub's aggregate unique-cloner metric. IRC GitWatch neither receives nor invents raw IP addresses. 🦉
+
 ## 0.33 — 2026-09-07 🔮
 
 ### Added

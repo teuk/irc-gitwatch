@@ -41,11 +41,13 @@ Dashboard deep links serve the same HTML shell, JavaScript asset and JSON aliase
 
 ## Response stability
 
-Fields remain additive in 0.33. Consumers should ignore unknown JSON keys. Existing field removal or semantic changes require a changelog entry and migration note. `/status.json` exposes the ordered `repos` list and a `repositories` status row for each scope while keeping `repo` as the primary scope. Dashboard JSON adds `selected_repo`, `primary_repo` and `dashboard.repository_path`; `github_traffic.repo` and `ci_reliability.repo` explicitly identify the repository-scoped Traffic and CI fields and match `selected_repo`.
+Fields remain additive in 0.34. Consumers should ignore unknown JSON keys. Existing field removal or semantic changes require a changelog entry and migration note. `/status.json` exposes the ordered `repos` list and a `repositories` status row for each scope while keeping `repo` as the primary scope. Dashboard JSON adds `selected_repo`, `primary_repo` and `dashboard.repository_path`; `github_traffic.repo` and `ci_reliability.repo` explicitly identify the repository-scoped Traffic and CI fields and match `selected_repo`.
+
+`github_traffic.latest` retains the newest GitHub daily row and can therefore describe the current partial UTC day. The additive `github_traffic.last_closed` object excludes today, prefers yesterday, and otherwise selects the newest earlier row. It includes `available`, `date`, `target_date`, `lag_days`, `fallback`, clone/view totals and GitHub aggregate unique counts. This makes a delayed J-2 value explicit instead of silently presenting it as J-1.
 
 `ci_reliability` is additive in dashboard/status JSON. The dedicated CI payload reports retention bounds, coverage, outcomes, pass rate, incidents, recovery time, duration percentiles, green streak and a short recent-run list. Empty history returns a `waiting` state rather than inventing a reliability result.
 
-Prometheus metrics retain the historical `githubwatch_` prefix. The additive `githubwatch_repository_*` gauges use a `repo` label for per-repository Events, Actions, CI and freshness. Labels include configured repository/account and IRC target metadata but never credentials.
+Prometheus metrics retain the historical `githubwatch_` prefix. The additive `githubwatch_repository_*` gauges use a `repo` label for per-repository Events, Actions, CI and freshness. Last-closed traffic is exposed through `githubwatch_github_last_closed_daily_{available,lag_days,clones,clone_uniques}`. Labels include configured repository/account and IRC target metadata but never credentials.
 
 ## IRC delivery truth
 

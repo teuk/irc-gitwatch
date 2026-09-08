@@ -34,7 +34,7 @@ IRC GitWatch commands are read-only, rate-limited and available in joined channe
 
 | Command | Result |
 | --- | --- |
-| `!github snapshot` | Latest daily clones/views and unique values. |
+| `!github snapshot` | Last complete UTC day: J-1 when available, otherwise an explicit J-2-or-older fallback. |
 | `!github traffic` | Exact rolling 14-day totals, today and peaks. |
 | `!github audience` / `uniques` | Unique-cloner/visitor semantics and ratios. |
 | `!github trend` / `week` / `compare` | Recent period comparison. |

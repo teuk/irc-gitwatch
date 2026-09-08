@@ -6,7 +6,7 @@
 
 IRC GitWatch is a single-process Perl daemon that turns GitHub activity into reliable IRC notifications and a live operational dashboard. It combines signed webhooks with polling reconciliation, watches GitHub Actions, preserves a per-target delivery queue, and exposes traffic and public-account analytics without pretending GitHub's aggregate “unique” figures are raw IP counts.
 
-The project began as the production bot behind `teuk/mediabot_v3`. Release 0.32 lets one daemon watch several repositories while keeping every repository's Events, Actions/CI and Traffic state independent and preserving the battle-tested shared IRC delivery queue. Release 0.33 adds a dashboard repository selector and shareable deep links for those independent statistics.
+The project began as the production bot behind `teuk/mediabot_v3`. Release 0.32 lets one daemon watch several repositories while keeping every repository's Events, Actions/CI and Traffic state independent and preserving the battle-tested shared IRC delivery queue. Release 0.33 adds a dashboard repository selector and shareable deep links for those independent statistics. Release 0.34 makes the latest complete traffic day explicit: J-1 when GitHub has published it, otherwise an honestly labelled J-2-or-older fallback.
 
 ## Why it is different
 
@@ -15,12 +15,12 @@ The project began as the production bot behind `teuk/mediabot_v3`. Release 0.32 
 - GitHub Actions failure, recovery, slow-run, missing-run and flaky-run detection.
 - Bounded 30-day CI reliability analytics: pass rate, active/resolved incidents, MTTR, p50/p95 runtime and current green streak, derived from the existing Actions feed without extra API calls.
 - Persistent fan-out delivery: each IRC network/channel is acknowledged independently after a short rejection window, with durable retry and honest IRC numeric errors.
-- GitHub Traffic dashboard with a watched-repository selector, clones, views, unique cloners, unique visitors, trends and retained daily history.
+- GitHub Traffic dashboard with a watched-repository selector, last-closed daily clones/unique cloners, views, trends and retained daily history.
 - Public owner portfolio: activity, stars, forks, hygiene, stale projects and change history for one configurable GitHub account.
 - Read-only JSON, health and Prometheus endpoints.
 - Optional RSS/Atom announcements.
 - Defensive UTF-8 and legacy mojibake repair across IRC, state, JSON and HTML.
-- One executable, one state file, built-in diagnostics, 162 named deterministic self-tests, versioned state fixtures and restart-aware black-box harnesses. No framework required — a pleasantly small bit of machinery with rather a lot under the cloak. 🪄
+- One executable, one state file, built-in diagnostics, 167 named deterministic self-tests, versioned state fixtures and restart-aware black-box harnesses. No framework required — a pleasantly small bit of machinery with rather a lot under the cloak. 🪄
 
 ## Requirements
 
@@ -111,6 +111,8 @@ The default local URL is `http://127.0.0.1:9510/`. Useful endpoints:
 
 The sticky header combines the full-name selector with a one-click rail of every watched project. Each project carries its own Events, CI and Traffic signal; the primary scope, current position and permalink remain visible while Traffic, unique-audience and CI reliability switch as one guarded repository context. Selection updates the address bar to `/repo/<owner>/<repository>` without reloading the page, and browser Back/Forward restores the matching project. The public reverse proxy must forward `/repo/` as well as the dashboard root if these deep links are exposed outside loopback.
 
+The dashboard's compact daily signal never mistakes the current partial UTC day for a finished result. It displays J-1 when present, otherwise the newest earlier row with its actual `J-N` lag and date. Exact rolling 14-day totals and the full daily curve remain available alongside it.
+
 GitHub returns aggregate unique cloners and visitors, not visitor IP addresses. IRC GitWatch preserves and labels that distinction everywhere.
 
 ## IRC commands
@@ -165,7 +167,7 @@ All profiles display progress and stop on the first failing named check. The tar
 
 ## Compatibility contract
 
-Release 0.33 retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and every existing IRC command. Existing v0.29/v0.30/v0.31/v0.32 state can be reused directly. The historical top-level state remains the `GITHUB_REPO` view for rollback compatibility; repository-local state is stored additively under `repo_state`. A newly added repository establishes Events and Actions baselines without replay before it starts announcing new activity.
+Release 0.34 retains the v0.29 state schema (`state_version: 11`), `githubwatch_` Prometheus metric prefix, webhook behavior and every existing IRC command. Existing v0.29/v0.30/v0.31/v0.32/v0.33 state can be reused directly. The historical top-level state remains the `GITHUB_REPO` view for rollback compatibility; repository-local state is stored additively under `repo_state`. A newly added repository establishes Events and Actions baselines without replay before it starts announcing new activity.
 
 Run `make check` before every upgrade. The suite exercises project defaults and unrelated public-account configurations to guard against accidental `teuk` coupling. Versioned fixtures prove that v0.29 and v0.30 state remain loadable; black-box restart tests prove that reconciliation, per-target acknowledgements and validated backup recovery remain durable without changing the schema.
 

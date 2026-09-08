@@ -20,7 +20,7 @@ binmode STDOUT, ':encoding(UTF-8)' or die "STDOUT UTF-8: $!";
 binmode STDERR, ':encoding(UTF-8)' or die "STDERR UTF-8: $!";
 $SIG{PIPE}='IGNORE'; # A proxy/client disconnect must never kill the daemon.
 
-use constant VERSION          => '0.33';
+use constant VERSION          => '0.34';
 use constant APP_NAME         => 'IRC GitWatch';
 use constant API_VERSION      => '2026-03-10';
 use constant MAX_IRC_BYTES    => 370;
@@ -1723,6 +1723,27 @@ sub traffic_latest_snapshot {
   clone_delta=>int($last->{clones}||0)-int($prev->{clones}||0),clone_unique_delta=>int($last->{clone_uniques}||0)-int($prev->{clone_uniques}||0),
   view_delta=>int($last->{views}||0)-int($prev->{views}||0),view_unique_delta=>int($last->{view_uniques}||0)-int($prev->{view_uniques}||0)};
 }
+sub traffic_last_closed_snapshot {
+ my($at)=@_;$at=time unless defined$at;
+ my$today=utc_date($at);my$target=utc_date($at-86400);
+ my@r=grep{my$d=clean($_->{date}||'');$d=~/^\d{4}-\d\d-\d\d$/&&$d lt$today}traffic_daily_rows();
+ my$last=@r?$r[-1]:{};my$prev=@r>1?$r[-2]:{};my$date=clean($last->{date}||'');
+ my$day_epoch=$date?iso8601_epoch($date.'T00:00:00Z'):0;
+ my@g=gmtime($at);my$today_epoch=timegm(0,0,0,$g[3],$g[4],$g[5]);
+ my$lag=$day_epoch?int(($today_epoch-$day_epoch)/86400):0;$lag=1 if$date ne''&&$lag<1;
+ +{
+  available=>$date ne''?1:0,date=>$date,target_date=>$target,lag_days=>$lag,
+  fallback=>$date ne''&&$date ne$target?1:0,complete=>$date ne''?1:0,
+  refreshed_at=>int($STATE{last_traffic_ok}||0),
+  clones=>int($last->{clones}||0),clone_uniques=>int($last->{clone_uniques}||0),
+  views=>int($last->{views}||0),view_uniques=>int($last->{view_uniques}||0),
+  previous_date=>clean($prev->{date}||''),
+  clone_delta=>int($last->{clones}||0)-int($prev->{clones}||0),
+  clone_unique_delta=>int($last->{clone_uniques}||0)-int($prev->{clone_uniques}||0),
+  view_delta=>int($last->{views}||0)-int($prev->{views}||0),
+  view_unique_delta=>int($last->{view_uniques}||0)-int($prev->{view_uniques}||0),
+ };
+}
 sub traffic_top {
  my($kind)=@_;my$src=$kind eq'referrers'?$STATE{traffic_referrers}:$STATE{traffic_paths};return()unless ref($src)eq'ARRAY';
  my@x=map{{%$_}}@$src;@x=sort{int($b->{count}||0)<=>int($a->{count}||0)}@x;splice@x,$CFG{traffic_top} if@x>$CFG{traffic_top};@x;
@@ -1788,7 +1809,7 @@ sub traffic_audience_summary {
 }
 sub traffic_payload {
  my$s=traffic_summary_data();my$a=traffic_audience_summary();
- +{%$s,repo=>$CFG{repo},error=>$RUN{traffic_error}||'',permission=>$RUN{traffic_permission}||'',daily=>[traffic_daily_rows()],latest=>traffic_latest_snapshot(),history=>traffic_history_summary(),referrers=>[traffic_top('referrers')],paths=>[traffic_top('paths')],audience=>$a,
+ +{%$s,repo=>$CFG{repo},error=>$RUN{traffic_error}||'',permission=>$RUN{traffic_permission}||'',daily=>[traffic_daily_rows()],latest=>traffic_latest_snapshot(),last_closed=>traffic_last_closed_snapshot(),history=>traffic_history_summary(),referrers=>[traffic_top('referrers')],paths=>[traffic_top('paths')],audience=>$a,
   semantics=>{unique_metric=>'GitHub aggregated unique cloners/visitors',raw_ip_addresses_available=>0,window_days=>14,timezone=>'UTC'}};
 }
 sub traffic_num { my($n,$digits)=@_;$digits//=1;my$p=10**$digits;int(($n||0)*$p+.5)/$p }
@@ -2468,15 +2489,15 @@ sub command {
   return
  }
  if($cmd eq'snapshot'||$cmd eq'lateststats'||$cmd eq'clones'){
-  my$l=traffic_latest_snapshot();
-  if(!$l->{date}){irc_msg($net,$r,icon('stats').' '.paint(14,bold('Latest traffic')).$s.'traffic data not cached yet');return}
+  my$l=traffic_last_closed_snapshot();
+  if(!$l->{available}){irc_msg($net,$r,icon('stats').' '.paint(14,bold('Last closed traffic')).$s.'J-1 data not cached yet');return}
   my$sign=sub{$_[0]>0?'+'.$_[0]:$_[0]};
-  irc_msg($net,$r,icon('stats').' '.paint(11,bold('Latest GitHub traffic')).$s.paint(14,$l->{date}.($l->{partial}?' · live UTC day':' · closed UTC day')).$s.
+  irc_msg($net,$r,icon('stats').' '.paint(11,bold('Last complete GitHub traffic')).$s.paint(14,'J-'.$l->{lag_days}.' · '.$l->{date}.' · closed UTC day').$s.
    'clones '.paint(10,$l->{clones}).' / '.paint(10,$l->{clone_uniques}.' unique').$s.
    'views '.paint(10,$l->{views}).' / '.paint(10,$l->{view_uniques}.' unique'));
-  irc_msg($net,$r,icon('stats').' '.paint(11,bold('Since previous day')).$s.
+  if($l->{previous_date}){irc_msg($net,$r,icon('stats').' '.paint(11,bold('Since previous closed day')).$s.paint(14,$l->{previous_date}).$s.
    'clones '.paint($l->{clone_delta}>0?3:$l->{clone_delta}<0?8:14,$sign->($l->{clone_delta})).' / unique '.paint($l->{clone_unique_delta}>0?3:$l->{clone_unique_delta}<0?8:14,$sign->($l->{clone_unique_delta})).$s.
-   'refreshed '.paint(14,$l->{refreshed_at}?age($l->{refreshed_at}):'time unknown'));
+   'refreshed '.paint(14,$l->{refreshed_at}?age($l->{refreshed_at}):'time unknown'))}
   return
  }
  if($cmd eq'history'){
@@ -3066,25 +3087,26 @@ function renderUniqueChart(d){
 }
 
 function renderHero(d){
-  const t=d.github_traffic||{},b=d.broadcast||{},targets=b.targets||[],daily=Array.isArray(t.daily)?t.daily:[];
-  const last=t.latest||((daily.length?daily[daily.length-1]:{})),prev=daily.length>1?daily[daily.length-2]:{};
-  const cloneDelta=num(last.clones)-num(prev.clones),viewDelta=num(last.views)-num(prev.views);
+  const t=d.github_traffic||{},b=d.broadcast||{},targets=b.targets||[];
+  const closed=t.last_closed||{},closedAvailable=Boolean(closed.available&&closed.date),closedLag=Math.max(1,num(closed.lag_days)||1);
+  const closedLabel=closedAvailable?`J-${closedLag} · ${closed.date}`:'J-1 · waiting';
+  const closedClones=closedAvailable?`${num(closed.clones)} clones · ${num(closed.clone_uniques)} unique cloners`:'waiting for a closed GitHub day';
   txt('stat-clones',num(t.clones));txt('stat-clone-uniques',num(t.clone_uniques));txt('stat-views',num(t.views));txt('stat-view-uniques',num(t.view_uniques));
   txt('stat-clones-unique',`${num(t.clone_uniques)} unique cloners`);txt('stat-views-unique',`${num(t.view_uniques)} unique visitors`);
   txt('toolbar-audience',`${num(t.clone_uniques)} cloners · ${num(t.view_uniques)} visitors`);
-  txt('toolbar-latest-traffic',`${num(last.clones)} clones · ${num(last.clone_uniques)} unique`);
-  const cd=$('stat-clones-delta'),vd=$('stat-views-delta');if(cd){cd.textContent=`${cloneDelta>0?'+':''}${cloneDelta} today`;cd.className=`stat-delta ${cloneDelta>0?'up':cloneDelta<0?'down':''}`}if(vd){vd.textContent=`${viewDelta>0?'+':''}${viewDelta} today`;vd.className=`stat-delta ${viewDelta>0?'up':viewDelta<0?'down':''}`}
-  const cloneUniqueDelta=num(last.clone_uniques)-num(prev.clone_uniques),viewUniqueDelta=num(last.view_uniques)-num(prev.view_uniques);
-  txt('stat-clone-uniques-today',`${num(last.clone_uniques)} today`);txt('stat-view-uniques-today',`${num(last.view_uniques)} today`);
+  txt('toolbar-closed-label',closedLabel);txt('toolbar-latest-traffic',closedClones);
+  const cd=$('stat-clones-delta'),vd=$('stat-views-delta');if(cd){cd.textContent=closedAvailable?`J-${closedLag} · ${num(closed.clones)} / ${num(closed.clone_uniques)} unique`:'J-1 waiting';cd.className='stat-delta'}if(vd){vd.textContent=closedAvailable?`J-${closedLag} · ${num(closed.views)} / ${num(closed.view_uniques)} unique`:'J-1 waiting';vd.className='stat-delta'}
+  const cloneUniqueDelta=num(closed.clone_unique_delta),viewUniqueDelta=num(closed.view_unique_delta),hasPrevious=Boolean(closed.previous_date);
+  txt('stat-clone-uniques-today',closedAvailable?`${num(closed.clone_uniques)} on J-${closedLag}`:'J-1 waiting');txt('stat-view-uniques-today',closedAvailable?`${num(closed.view_uniques)} on J-${closedLag}`:'J-1 waiting');
   const cud=$('stat-clone-uniques-delta'),vud=$('stat-view-uniques-delta');
-  if(cud){cud.textContent=`${cloneUniqueDelta>0?'+':''}${cloneUniqueDelta} vs previous`;cud.className=`stat-delta ${cloneUniqueDelta>0?'up':cloneUniqueDelta<0?'down':''}`}
-  if(vud){vud.textContent=`${viewUniqueDelta>0?'+':''}${viewUniqueDelta} vs previous`;vud.className=`stat-delta ${viewUniqueDelta>0?'up':viewUniqueDelta<0?'down':''}`}
+  if(cud){cud.textContent=hasPrevious?`${cloneUniqueDelta>0?'+':''}${cloneUniqueDelta} vs ${closed.previous_date}`:'no previous closed day';cud.className=`stat-delta ${hasPrevious?(cloneUniqueDelta>0?'up':cloneUniqueDelta<0?'down':''):''}`}
+  if(vud){vud.textContent=hasPrevious?`${viewUniqueDelta>0?'+':''}${viewUniqueDelta} vs ${closed.previous_date}`:'no previous closed day';vud.className=`stat-delta ${hasPrevious?(viewUniqueDelta>0?'up':viewUniqueDelta<0?'down':''):''}`}
   const a=t.audience||{},cmp=a.comparison_7d||{},change=cmp.changes?.clones||{},peak=a.best_clone_unique||{};
   txt('audience-clone-depth',`${num(a.clones_per_unique).toFixed(2)} / cloner`);
   txt('audience-unique-average',`${num(a.avg_daily_clone_uniques).toFixed(1)} cloners`);
   txt('audience-unique-peak',`${num(peak.clone_uniques)} · ${String(peak.date||'?').slice(0,10)}`);
   const wc=$('audience-week-change');if(wc){const pct=num(change.pct);wc.textContent=`${pct>0?'+':''}${pct.toFixed(1)}% vs previous`;wc.className=pct>0?'up':pct<0?'down':''}
-  const joined=targets.filter(x=>x.joined).length;txt('pulse-webhook',upper(d.webhook));const pw=$('pulse-webhook');if(pw)pw.className=`pulse-value ${stateClass(d.webhook)}`;txt('pulse-ci',upper(d.github_actions));const pc=$('pulse-ci');if(pc)pc.className=`pulse-value ${stateClass(d.github_actions)}`;txt('pulse-fanout',`${joined}/${targets.length}`);const pf=$('pulse-fanout');if(pf)pf.className=`pulse-value ${joined===targets.length?'ok':'warn'}`;txt('pulse-queue',num(d.queue));const pq=$('pulse-queue');if(pq)pq.className=`pulse-value ${num(d.queue)?'warn':'ok'}`;txt('pulse-today',`${num(last.clones)} clones · ${num(last.clone_uniques)} unique`);txt('pulse-latest',d.last_event_at?rel(d.last_event_at):'none');
+  const joined=targets.filter(x=>x.joined).length;txt('pulse-webhook',upper(d.webhook));const pw=$('pulse-webhook');if(pw)pw.className=`pulse-value ${stateClass(d.webhook)}`;txt('pulse-ci',upper(d.github_actions));const pc=$('pulse-ci');if(pc)pc.className=`pulse-value ${stateClass(d.github_actions)}`;txt('pulse-fanout',`${joined}/${targets.length}`);const pf=$('pulse-fanout');if(pf)pf.className=`pulse-value ${joined===targets.length?'ok':'warn'}`;txt('pulse-queue',num(d.queue));const pq=$('pulse-queue');if(pq)pq.className=`pulse-value ${num(d.queue)?'warn':'ok'}`;txt('pulse-closed-label',closedLabel);txt('pulse-today',closedClones);txt('pulse-latest',d.last_event_at?rel(d.last_event_at):'none');
   const refs=t.referrers||[],paths=t.paths||[];html('top-referrers',refs.length?refs.map(x=>`<div class="list-row"><span>${esc(x.referrer||'direct')}</span><b>${num(x.count)} · ${num(x.uniques)} unique</b></div>`).join(''):'<div class="small">No referrer data.</div>');html('top-paths',paths.length?paths.map(x=>`<div class="list-row"><span>${esc(x.path||'/')}</span><b>${num(x.count)} · ${num(x.uniques)} unique</b></div>`).join(''):'<div class="small">No path data.</div>');
   renderChart(d);
   renderUniqueChart(d);
@@ -3352,12 +3374,7 @@ sub dashboard_html {
  my$qsum=queue_snapshot();my@qparts;
  for my$t(enabled_targets()){my$m=$t->{metric};push@qparts,$t->{net}{label}.' '.$t->{channel}.' pending '.int($qsum->{$m}||0)}
  my$qdetail=html_escape(join(' · ',@qparts).' · oldest '.($qsum->{oldest_at}?age($qsum->{oldest_at}):'none'));my$state_info=state_status();my$state_txt=html_escape('state '.$state_info->{primary}.' · backup '.$state_info->{backup});
- my$hero_t=traffic_summary_data();my$hero_ct=traffic_recent_trend('clones');my$hero_vt=traffic_recent_trend('views');
- my$hero_clones=int($hero_t->{clones}||0);my$hero_uniques=int($hero_t->{clone_uniques}||0);
- my$hero_views=int($hero_t->{views}||0);my$hero_view_uniques=int($hero_t->{view_uniques}||0);
- my$hero_clones_today=int($hero_ct->{current}||0);my$hero_views_today=int($hero_vt->{current}||0);
  my$hero_traffic_age=html_escape($STATE{last_traffic_ok}?age($STATE{last_traffic_ok}):'waiting');
- my$hero_clone_delta=int($hero_ct->{delta}||0);my$hero_view_delta=int($hero_vt->{delta}||0);
  my@hero_rows=traffic_daily_rows();my$hero_max=1;for my$hr(@hero_rows){my$v=int($hr->{clones}||0)+int($hr->{views}||0);$hero_max=$v if$v>$hero_max}
  my$hero_spark=join('',map{my$v=int($_->{clones}||0)+int($_->{views}||0);my$h=$v?int(100*$v/$hero_max):0;$h=12 if$h>0&&$h<12;'<i style="height:'.$h.'%" title="'.html_escape(($_->{date}||'').' · '.$v.' combined').'"></i>'}@hero_rows);
  my@initial_refs=traffic_top('referrers');my@initial_paths=traffic_top('paths');
@@ -3371,7 +3388,16 @@ sub dashboard_html {
  my$account_prev_label=html_escape($account->{trend}{stars}{previous_date}||'previous snapshot');
  my$account_changes=account_change_rows();my$account_changes_html=@$account_changes?join('',map{'<div class="history-row"><span class="source">'.html_escape(uc($_->{kind}||'change')).'</span> <span class="muted">'.html_escape($_->{at}?age($_->{at}):'time unknown').'</span> '.html_escape($_->{text}||'').'</div>'}@$account_changes):'<div class="small">No portfolio change recorded yet.</div>';
  my$audience=traffic_audience_summary();
- my$latest_traffic=traffic_latest_snapshot();my$traffic_history=traffic_history_summary();
+ my$closed_traffic=traffic_last_closed_snapshot();my$traffic_history=traffic_history_summary();
+ my$closed_lag=$closed_traffic->{available}?int($closed_traffic->{lag_days}||1):1;
+ my$closed_label=html_escape($closed_traffic->{available}?'J-'.$closed_lag.' · '.$closed_traffic->{date}:'J-1 · waiting');
+ my$closed_clones=html_escape($closed_traffic->{available}?$closed_traffic->{clones}.' clones · '.$closed_traffic->{clone_uniques}.' unique cloners':'waiting for a closed GitHub day');
+ my$closed_previous=clean($closed_traffic->{previous_date}||'');
+ my$closed_clone_unique_delta=int($closed_traffic->{clone_unique_delta}||0);my$closed_view_unique_delta=int($closed_traffic->{view_unique_delta}||0);
+ my$closed_clone_unique_delta_text=html_escape($closed_previous ne''?($closed_clone_unique_delta>0?'+':'').$closed_clone_unique_delta.' vs '.$closed_previous:'no previous closed day');
+ my$closed_view_unique_delta_text=html_escape($closed_previous ne''?($closed_view_unique_delta>0?'+':'').$closed_view_unique_delta.' vs '.$closed_previous:'no previous closed day');
+ my$closed_clone_unique_delta_class=$closed_previous eq''?'':$closed_clone_unique_delta>0?'up':$closed_clone_unique_delta<0?'down':'';
+ my$closed_view_unique_delta_class=$closed_previous eq''?'':$closed_view_unique_delta>0?'up':$closed_view_unique_delta<0?'down':'';
  my$aud_week=$audience->{comparison_7d};my$aud_clone_change=$aud_week->{changes}{clones};
  my$aud_peak=$audience->{best_clone_unique};my$aud_peak_value=int($aud_peak->{clone_uniques}||0);my$aud_peak_date=html_escape(substr(clean($aud_peak->{date}||'?'),0,10));
  my$aud_change_sign=$aud_clone_change->{pct}>0?'+':'';my$aud_change_class=$aud_clone_change->{delta}>0?'up':$aud_clone_change->{delta}<0?'down':'';
@@ -3476,15 +3502,15 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
 <body><main>
 <div class="top">
  <div class="toolbar-left"><div class="toolbar-mark">G</div><div class="toolbar-title"><h1>$app <span class="badge" id="version-badge">v$ver</span></h1><div class="repo-switcher"><label for="repo-select">Repository</label><select class="repo-select" id="repo-select" aria-label="Displayed GitHub repository">$repo_options</select><a class="repo-link" id="repo-link" href="$repo_github_url" rel="noopener noreferrer">GitHub ↗</a></div></div></div>
- <div class="toolbar-right"><span class="toolbar-chip"><span id="health-badge" class="$health_class">●</span><strong id="health-text">HEALTH $health_txt</strong></span><span class="toolbar-chip"><span class="live-dot"></span><strong id="live-badge">LIVE · connecting…</strong></span><span class="toolbar-chip repo-scope">Latest <strong id="toolbar-latest-traffic">$latest_traffic->{clones} clones · $latest_traffic->{clone_uniques} unique</strong></span><span class="toolbar-chip repo-scope">Audience <strong id="toolbar-audience">$audience->{clone_uniques} cloners · $audience->{view_uniques} visitors</strong></span><span class="toolbar-chip">UTC · rolling 14d</span></div>
+ <div class="toolbar-right"><span class="toolbar-chip"><span id="health-badge" class="$health_class">●</span><strong id="health-text">HEALTH $health_txt</strong></span><span class="toolbar-chip"><span class="live-dot"></span><strong id="live-badge">LIVE · connecting…</strong></span><span class="toolbar-chip repo-scope"><span id="toolbar-closed-label">$closed_label</span> <strong id="toolbar-latest-traffic">$closed_clones</strong></span><span class="toolbar-chip repo-scope">Audience <strong id="toolbar-audience">$audience->{clone_uniques} cloners · $audience->{view_uniques} visitors</strong></span><span class="toolbar-chip">UTC · rolling 14d</span></div>
  <div class="repo-rail"><nav class="repo-tabs" id="repo-tabs" aria-label="Watched repositories">$repo_tabs</nav><div class="repo-context"><span id="repo-count">$repo_count watched · @{[$repo_index+1]}/$repo_count</span><span class="repo-context-state"><i class="repo-context-dot $repo_context_state" id="repo-context-dot" aria-hidden="true"></i><span id="repo-context-health" aria-live="polite">$repo_context_health</span></span><a class="repo-permalink" id="repo-permalink" href="$repo_permalink">Permalink</a></div></div>
 </div>
 
 <div class="stat-row">
- <section class="stat-panel clone"><div class="stat-title">Clones · 14 days</div><div class="stat-value" id="stat-clones">$audience->{clones}</div><div class="stat-meta"><span id="stat-clones-unique">$audience->{clone_uniques} unique cloners</span><span id="stat-clones-delta" class="stat-delta">@{[$hero_clone_delta>0?'+':'']}$hero_clone_delta today</span></div></section>
- <section class="stat-panel unique"><div class="stat-title">Unique cloners · 14 days</div><div class="stat-value" id="stat-clone-uniques">$audience->{clone_uniques}</div><div class="stat-meta"><span id="stat-clone-uniques-today">$audience->{today_clone_uniques} today</span><span id="stat-clone-uniques-delta" class="stat-delta">@{[$audience->{clone_unique_trend}{delta}>0?'+':'']}$audience->{clone_unique_trend}{delta} vs previous</span></div></section>
- <section class="stat-panel views"><div class="stat-title">Views · 14 days</div><div class="stat-value" id="stat-views">$audience->{views}</div><div class="stat-meta"><span id="stat-views-unique">$audience->{view_uniques} unique visitors</span><span id="stat-views-delta" class="stat-delta">@{[$hero_view_delta>0?'+':'']}$hero_view_delta today</span></div></section>
- <section class="stat-panel visitors"><div class="stat-title">Unique visitors · 14 days</div><div class="stat-value" id="stat-view-uniques">$audience->{view_uniques}</div><div class="stat-meta"><span id="stat-view-uniques-today">$audience->{today_view_uniques} today</span><span id="stat-view-uniques-delta" class="stat-delta">@{[$audience->{view_unique_trend}{delta}>0?'+':'']}$audience->{view_unique_trend}{delta} vs previous</span></div></section>
+ <section class="stat-panel clone"><div class="stat-title">Clones · 14 days</div><div class="stat-value" id="stat-clones">$audience->{clones}</div><div class="stat-meta"><span id="stat-clones-unique">$audience->{clone_uniques} unique cloners</span><span id="stat-clones-delta" class="stat-delta">@{[$closed_traffic->{available}?'J-'.$closed_lag.' · '.$closed_traffic->{clones}.' / '.$closed_traffic->{clone_uniques}.' unique':'J-1 waiting']}</span></div></section>
+ <section class="stat-panel unique"><div class="stat-title">Unique cloners · 14 days</div><div class="stat-value" id="stat-clone-uniques">$audience->{clone_uniques}</div><div class="stat-meta"><span id="stat-clone-uniques-today">@{[$closed_traffic->{available}?$closed_traffic->{clone_uniques}.' on J-'.$closed_lag:'J-1 waiting']}</span><span id="stat-clone-uniques-delta" class="stat-delta $closed_clone_unique_delta_class">$closed_clone_unique_delta_text</span></div></section>
+ <section class="stat-panel views"><div class="stat-title">Views · 14 days</div><div class="stat-value" id="stat-views">$audience->{views}</div><div class="stat-meta"><span id="stat-views-unique">$audience->{view_uniques} unique visitors</span><span id="stat-views-delta" class="stat-delta">@{[$closed_traffic->{available}?'J-'.$closed_lag.' · '.$closed_traffic->{views}.' / '.$closed_traffic->{view_uniques}.' unique':'J-1 waiting']}</span></div></section>
+ <section class="stat-panel visitors"><div class="stat-title">Unique visitors · 14 days</div><div class="stat-value" id="stat-view-uniques">$audience->{view_uniques}</div><div class="stat-meta"><span id="stat-view-uniques-today">@{[$closed_traffic->{available}?$closed_traffic->{view_uniques}.' on J-'.$closed_lag:'J-1 waiting']}</span><span id="stat-view-uniques-delta" class="stat-delta $closed_view_unique_delta_class">$closed_view_unique_delta_text</span></div></section>
 </div>
 
 <div class="dashboard-row">
@@ -3504,7 +3530,7 @@ details.card>summary{cursor:pointer;list-style:none;display:flex;align-items:cen
  <div class="pulse-cell repo-scope"><span class="pulse-label">CI</span><span class="pulse-value $ci_class" id="pulse-ci">$ci</span></div>
  <div class="pulse-cell"><span class="pulse-label">Fan-out</span><span class="pulse-value" id="pulse-fanout">$hero_fanout_joined/$hero_fanout_total</span></div>
  <div class="pulse-cell"><span class="pulse-label">Queue</span><span class="pulse-value" id="pulse-queue">$q</span></div>
- <div class="pulse-cell repo-scope"><span class="pulse-label">Latest traffic</span><span class="pulse-value" id="pulse-today">$latest_traffic->{clones} clones · $latest_traffic->{clone_uniques} unique</span></div>
+ <div class="pulse-cell repo-scope"><span class="pulse-label" id="pulse-closed-label">$closed_label</span><span class="pulse-value" id="pulse-today">$closed_clones</span></div>
  <div class="pulse-cell"><span class="pulse-label">Latest</span><span class="pulse-value" id="pulse-latest">$last_age</span></div>
 </div>
 
@@ -3580,7 +3606,7 @@ sub prom_escape {
  my($s)=@_;$s//=q{};$s=clean($s);$s=~s/\\/\\\\/g;$s=~s/"/\\"/g;$s=~s/\n/\\n/g;$s;
 }
 sub prometheus_metrics {
- my$q=queue_snapshot();my$limited=github_rest_allowed()?0:1;my@out;my$tr=traffic_summary_data();my$aud=traffic_audience_summary();my$latest=traffic_latest_snapshot();my$hist=traffic_history_summary();my$acct=account_summary();
+ my$q=queue_snapshot();my$limited=github_rest_allowed()?0:1;my@out;my$tr=traffic_summary_data();my$aud=traffic_audience_summary();my$latest=traffic_latest_snapshot();my$closed=traffic_last_closed_snapshot();my$hist=traffic_history_summary();my$acct=account_summary();
  push@out,'# HELP githubwatch_info IRC GitWatch build information';
  push@out,'# TYPE githubwatch_info gauge';
  push@out,'githubwatch_info{version="'.prom_escape(VERSION).'",repo="'.prom_escape($REPOS[0]{name}).'",account="'.prom_escape($CFG{account}).'"} 1';
@@ -3645,6 +3671,10 @@ sub prometheus_metrics {
  push@out,'# TYPE githubwatch_github_latest_daily_views gauge';push@out,'githubwatch_github_latest_daily_views '.int($latest->{views}||0);
  push@out,'# TYPE githubwatch_github_latest_daily_view_uniques gauge';push@out,'githubwatch_github_latest_daily_view_uniques '.int($latest->{view_uniques}||0);
  push@out,'# TYPE githubwatch_github_latest_daily_partial gauge';push@out,'githubwatch_github_latest_daily_partial '.($latest->{partial}?1:0);
+ push@out,'# TYPE githubwatch_github_last_closed_daily_available gauge';push@out,'githubwatch_github_last_closed_daily_available '.($closed->{available}?1:0);
+ push@out,'# TYPE githubwatch_github_last_closed_daily_lag_days gauge';push@out,'githubwatch_github_last_closed_daily_lag_days '.int($closed->{lag_days}||0);
+ push@out,'# TYPE githubwatch_github_last_closed_daily_clones gauge';push@out,'githubwatch_github_last_closed_daily_clones '.int($closed->{clones}||0);
+ push@out,'# TYPE githubwatch_github_last_closed_daily_clone_uniques gauge';push@out,'githubwatch_github_last_closed_daily_clone_uniques '.int($closed->{clone_uniques}||0);
  push@out,'# TYPE githubwatch_github_traffic_history_days gauge';push@out,'githubwatch_github_traffic_history_days '.int($hist->{days}||0);
  push@out,'# TYPE githubwatch_github_traffic_last_ok_timestamp gauge';push@out,'githubwatch_github_traffic_last_ok_timestamp '.int($STATE{last_traffic_ok}||0);
  for my$m(qw(repositories maintained active_30d archived stale stars forks open_issues missing_description missing_license missing_topics)){
@@ -4155,6 +4185,9 @@ traffic.daily-row-order
 traffic.history-merge
 traffic.history-retention
 traffic.latest-snapshot
+traffic.last-closed-j1
+traffic.last-closed-j2-fallback
+traffic.last-closed-excludes-current
 traffic.period-comparison
 traffic.unique-peak-summary
 traffic.github-unique-semantics
@@ -4418,7 +4451,7 @@ sub selftest {
  @STATE{qw(last_hook_reject_reason last_hook_reject_at)}=($old_rej_reason,$old_rej_at);@STATS{qw(hook_invalid hook_bad_signature)}=($old_invalid,$old_sig);
 
  my$qcheck=queue_snapshot();push@t,ref($qcheck)eq'HASH'&&exists$qcheck->{total}&&exists$qcheck->{oldest_at}&&!(grep{!exists$qcheck->{$_->{id}}||!exists$qcheck->{$_->{id}.'_oldest_at'}}enabled_nets());
- my$pm=prometheus_metrics();push@t,$pm=~/githubwatch_info/&&$pm=~/githubwatch_ci_running_current/&&$pm=~/githubwatch_ci_expected_current/&&$pm=~/githubwatch_ci_flaky_current/&&$pm=~/githubwatch_webhook_bad_signature_total/&&$pm=~/githubwatch_queue_pending_oldest_seconds/&&$pm=~/githubwatch_irc_heartbeat_pings_total/&&$pm=~/githubwatch_github_latest_daily_clones/&&$pm=~/githubwatch_github_traffic_history_days/&&$pm!~/GITHUB_TOKEN/;
+ my$pm=prometheus_metrics();push@t,$pm=~/githubwatch_info/&&$pm=~/githubwatch_ci_running_current/&&$pm=~/githubwatch_ci_expected_current/&&$pm=~/githubwatch_ci_flaky_current/&&$pm=~/githubwatch_webhook_bad_signature_total/&&$pm=~/githubwatch_queue_pending_oldest_seconds/&&$pm=~/githubwatch_irc_heartbeat_pings_total/&&$pm=~/githubwatch_github_latest_daily_clones/&&$pm=~/githubwatch_github_last_closed_daily_clones/&&$pm=~/githubwatch_github_last_closed_daily_clone_uniques/&&$pm=~/githubwatch_github_traffic_history_days/&&$pm!~/GITHUB_TOKEN/;
 
  my$old_state_sf=$CFG{state_file};my$old_sb=$CFG{state_backup};my$sf="/tmp/githubwatch-state-v018-selftest-$$.json";$CFG{state_file}=$sf;$CFG{state_backup}=1;unlink$sf;unlink"$sf.bak";
  my($wok,$werr)=write_raw_atomic_0600($sf,encode_json({state_version=>6,saved_at=>123,foo=>'bar'}));push@t,$wok;
@@ -4460,13 +4493,22 @@ sub selftest {
  $STATE{traffic_history}{'2026-01-01'}={date=>'2026-01-01',clones=>3,clone_uniques=>1,views=>5,view_uniques=>2};
  my@long_td=traffic_daily_rows();my$ths=traffic_history_summary();push@t,@long_td==3&&$long_td[0]{date}eq'2026-01-01'&&$ths->{days}==3&&$ths->{retention_days}==MAX_TRAFFIC_DAYS;
  my$latest28=traffic_latest_snapshot();push@t,$latest28->{date}eq'2026-08-27'&&$latest28->{clones}==8&&$latest28->{clone_uniques}==3&&$latest28->{clone_delta}==4;
+ my$noon28=timegm(0,0,12,28,7,2026);my$closed28=traffic_last_closed_snapshot($noon28);
+ push@t,$closed28->{available}&&$closed28->{date}eq'2026-08-27'&&$closed28->{target_date}eq'2026-08-27'&&$closed28->{lag_days}==1&&!$closed28->{fallback}&&$closed28->{clones}==8&&$closed28->{clone_uniques}==3;
+ my$noon29=timegm(0,0,12,29,7,2026);my$closed29=traffic_last_closed_snapshot($noon29);
+ push@t,$closed29->{available}&&$closed29->{date}eq'2026-08-27'&&$closed29->{target_date}eq'2026-08-28'&&$closed29->{lag_days}==2&&$closed29->{fallback};
+ push@{$STATE{traffic_clones}{clones}},{timestamp=>'2026-08-28T00:00:00Z',count=>99,uniques=>88};
+ push@{$STATE{traffic_views}{views}},{timestamp=>'2026-08-28T00:00:00Z',count=>77,uniques=>66};
+ my$closed_excluding_current=traffic_last_closed_snapshot($noon28);
+ push@t,$closed_excluding_current->{date}eq'2026-08-27'&&$closed_excluding_current->{clones}==8&&$closed_excluding_current->{clone_uniques}==3;
+ pop@{$STATE{traffic_clones}{clones}};pop@{$STATE{traffic_views}{views}};
  my$pc=traffic_period_comparison(1);push@t,$pc->{current}{clones}==8&&$pc->{previous}{clones}==4&&$pc->{changes}{clones}{delta}==4;
  my$pk=traffic_peak_summary();push@t,$pk->{clone_uniques}{clone_uniques}==3&&$pk->{view_uniques}{view_uniques}==7;
  my$ta=traffic_audience_summary();push@t,$ta->{raw_ip_addresses_available}==0&&$ta->{unique_metric}eq'github_aggregated_unique'&&$ta->{clones_per_unique}>2;
  my@tt=traffic_top('referrers');push@t,@tt==2&&$tt[0]{referrer}eq'example.test'&&$tt[1]{referrer}eq'small.test';
- my$tpayload=traffic_payload();push@t,ref($tpayload)eq'HASH'&&ref($tpayload->{daily})eq'ARRAY'&&ref($tpayload->{audience})eq'HASH'&&ref($tpayload->{latest})eq'HASH'&&ref($tpayload->{history})eq'HASH'&&$tpayload->{history}{days}==3&&$tpayload->{semantics}{raw_ip_addresses_available}==0&&($CFG{token}eq''||index(encode_json($tpayload),$CFG{token})<0);
- my$snapshot_html=dashboard_html();push@t,$snapshot_html=~/id="toolbar-latest-traffic">8 clones · 3 unique/&&$snapshot_html=~/id="pulse-today">8 clones · 3 unique/;
- my$snapshot_wire='';open my$snapshot_fh,'>',\$snapshot_wire or die"snapshot selftest: $!";binmode$snapshot_fh,':raw';my$snapshot_net={id=>'snapshot-test',label=>'Snapshot test',up=>1,socket=>$snapshot_fh,nick=>'githubwatch'};my$old_cooldown=$CFG{cmd_cooldown};$CFG{cmd_cooldown}=0;command($snapshot_net,'tester','#test','!github snapshot');$CFG{cmd_cooldown}=$old_cooldown;close$snapshot_fh;my$snapshot_text=decode('UTF-8',$snapshot_wire);push@t,$snapshot_text=~/Latest GitHub traffic/&&$snapshot_text=~/clones .*8.*3 unique/s&&$snapshot_text=~/Since previous day/;
+ my$tpayload=traffic_payload();push@t,ref($tpayload)eq'HASH'&&ref($tpayload->{daily})eq'ARRAY'&&ref($tpayload->{audience})eq'HASH'&&ref($tpayload->{latest})eq'HASH'&&ref($tpayload->{last_closed})eq'HASH'&&ref($tpayload->{history})eq'HASH'&&$tpayload->{history}{days}==3&&$tpayload->{semantics}{raw_ip_addresses_available}==0&&($CFG{token}eq''||index(encode_json($tpayload),$CFG{token})<0);
+ my$snapshot_html=dashboard_html();push@t,$snapshot_html=~/id="toolbar-closed-label">J-\d+ · 2026-08-27/&&$snapshot_html=~/id="toolbar-latest-traffic">8 clones · 3 unique cloners/&&$snapshot_html=~/id="pulse-today">8 clones · 3 unique cloners/;
+ my$snapshot_wire='';open my$snapshot_fh,'>',\$snapshot_wire or die"snapshot selftest: $!";binmode$snapshot_fh,':raw';my$snapshot_net={id=>'snapshot-test',label=>'Snapshot test',up=>1,socket=>$snapshot_fh,nick=>'githubwatch'};my$old_cooldown=$CFG{cmd_cooldown};$CFG{cmd_cooldown}=0;command($snapshot_net,'tester','#test','!github snapshot');$CFG{cmd_cooldown}=$old_cooldown;close$snapshot_fh;my$snapshot_text=decode('UTF-8',$snapshot_wire);push@t,$snapshot_text=~/Last complete GitHub traffic/&&$snapshot_text=~/J-\d+.*2026-08-27/&&$snapshot_text=~/clones .*8.*3 unique/s&&$snapshot_text=~/Since previous closed day/;
  $STATE{traffic_clones}=$old_tc;$STATE{traffic_views}=$old_tv;$STATE{traffic_history}=$old_th;$STATE{traffic_referrers}=$old_tr;$STATE{traffic_paths}=$old_tp;$STATE{last_traffic_ok}=$old_tat;
 
  # v0.20.1 regression tests: Undernet key fallback, partial membership,
@@ -4534,11 +4576,12 @@ sub selftest {
  $STATE{ci_bad_state}={$build_scope=>{run_id=>6,at=>$ci_now-60,conclusion=>'failure',name=>'Build',branch=>'main',url=>$ci_url.'6',attempt=>1,duration=>45}};my$rel_degraded=ci_reliability_summary($ci_now);push@t,$rel_degraded->{state}eq'degraded'&&$rel_degraded->{active_incidents}==1&&$rel_degraded->{active}[0]{name}eq'Build';
  ($STATE{ci_run_history},$STATE{ci_bad_state},$CFG{actions_enabled})=($old_ci_history,$old_ci_bad,$old_ci_actions_enabled);
 
- # v0.28 keeps exact 14-day aggregates separate from accumulated daily
- # history, and exposes the latest clone/unique snapshot immediately.
+ # v0.34 keeps exact 14-day aggregates separate from accumulated daily
+ # history and makes the last closed UTC day explicit without hiding the
+ # backwards-compatible latest (possibly partial) snapshot from API clients.
  my$dash28=dashboard_html();my$js28=dashboard_js();
- push@t,$dash28=~/id="toolbar-latest-traffic"/&&$dash28=~/Latest traffic/&&$dash28=~/data-range="30"/&&$dash28=~/data-range="90"/&&$dash28=~/retain up to 400 days/;
- push@t,$js28=~/rows\.slice\(-Math\.max\(1,chartRange\)\)/&&$js28=~/toolbar-latest-traffic/&&$js28=~/t\.latest/&&$js28=~/last\.clone_uniques/&&$js28=~/history\?\.days/;
+ push@t,$dash28=~/id="toolbar-closed-label">J-\d+/&&$dash28=~/id="toolbar-latest-traffic"/&&$dash28=~/id="pulse-closed-label"/&&$dash28=~/data-range="30"/&&$dash28=~/data-range="90"/&&$dash28=~/retain up to 400 days/;
+ push@t,$js28=~/rows\.slice\(-Math\.max\(1,chartRange\)\)/&&$js28=~/toolbar-closed-label/&&$js28=~/t\.last_closed/&&$js28=~/closed\.clone_uniques/&&$js28=~/history\?\.days/;
 
  # v0.27 unique-audience graph and analysis: GitHub aggregates are visible,
  # useful and never mislabeled as raw-IP observations.

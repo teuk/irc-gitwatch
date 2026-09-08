@@ -57,6 +57,7 @@ Before replacing the primary file, backup rotation parses and validates the curr
 - Security-alert event classes are deliberately not announced.
 - Configured credentials and private channel keys are excluded from every read-only surface.
 - GitHub unique-cloner/visitor aggregates are never presented as raw IP data.
+- The last-closed traffic signal excludes the current UTC day, prefers J-1 and carries its actual lag when GitHub has only published J-2 or older data.
 
 ## Failure behavior
 
